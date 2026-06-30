@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { PublicClientApplication } from '@azure/msal-browser';
 
 const CATEGORIAS = [
   'Limpeza', 'HDMI', 'VGA', 'Memória RAM / Placa de rede', 'ATX',
@@ -19,31 +20,35 @@ const STATUS_COLOR = {
 const ACCENT = '#185FA5';
 const ACCENT_DARK = '#042C53';
 
-// ---- Microsoft Graph / SharePoint config ----
 const CLIENT_ID = '37ff5e3e-1558-4add-b4e9-8e5c97e21943';
 const TENANT_ID = '9cc5e35a-c64c-4450-ae6d-9bf065f73c61';
 const SITE_HOSTNAME = 'flashcouriercombr.sharepoint.com';
 const SITE_PATH = '/sites/Suporte_Tcnico';
-const FILE_PATH = '/ESTOQUE TI/Estoque TI.xlsx'; // relative to the default document library (Documentos Partilhados)
+const FILE_PATH = '/ESTOQUE TI/Estoque TI.xlsx';
 const GRAPH_SCOPES = ['Files.ReadWrite', 'Sites.Read.All', 'User.Read'];
 
-const ITEM_COLS = ['ID', 'Nome', 'Categoria', 'Quantidade', 'Patrimonio', 'Status', 'Responsavel', 'Localizacao', 'DataEntrada', 'Observacoes', 'CreatedAt'];
-const MOV_COLS = ['ID', 'ItemId', 'ItemNome', 'Acao', 'Responsavel', 'RegistradoPor', 'Data', 'Obs'];
+const msalConfig = {
+  auth: {
+    clientId: CLIENT_ID,
+    authority: `https://login.microsoftonline.com/${TENANT_ID}`,
+    redirectUri: window.location.origin,
+  },
+  cache: { cacheLocation: 'sessionStorage', storeAuthStateInCookie: false },
+};
+
+const msalInstance = new PublicClientApplication(msalConfig);
 
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
-
 function fmtDate(d) {
   if (!d) return '—';
   try { return new Date(d).toLocaleDateString('pt-BR'); } catch { return d; }
 }
-
 function fmtDateTime(d) {
   if (!d) return '—';
   try { return new Date(d).toLocaleString('pt-BR'); } catch { return d; }
 }
-
 function rowToItem(values) {
   const [ID, Nome, Categoria, Quantidade, Patrimonio, Status, Responsavel, Localizacao, DataEntrada, Observacoes, CreatedAt] = values;
   return { id: ID, nome: Nome, categoria: Categoria, quantidade: Quantidade || 1, patrimonio: Patrimonio, status: Status, responsavel: Responsavel, localizacao: Localizacao, dataEntrada: DataEntrada, obs: Observacoes, createdAt: CreatedAt };
@@ -59,23 +64,11 @@ function movToRow(mv) {
   return [mv.id, mv.itemId, mv.itemName, mv.action, mv.responsavel || '—', mv.registradoPor, mv.date, mv.obs || ''];
 }
 
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) return resolve();
-    const s = document.createElement('script');
-    s.src = src;
-    s.onload = resolve;
-    s.onerror = reject;
-    document.head.appendChild(s);
-  });
-}
-
 export default function InventarioTI() {
   const [msalReady, setMsalReady] = useState(false);
   const [account, setAccount] = useState(null);
   const [authError, setAuthError] = useState('');
   const [connecting, setConnecting] = useState(false);
-  const msalRef = useRef(null);
   const graphCtx = useRef({ siteId: null, itemId: null });
 
   const [items, setItems] = useState([]);
@@ -95,33 +88,15 @@ export default function InventarioTI() {
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [toast, setToast] = useState(null);
 
-  // ---- MSAL bootstrap ----
   useEffect(() => {
-    let cancelled = false;
-    async function init() {
-      try {
-        await loadScript('https://cdnjs.cloudflare.com/ajax/libs/msal-browser/3.18.0/msal-browser.min.js');
-        if (cancelled) return;
-        const msalConfig = {
-          auth: {
-            clientId: CLIENT_ID,
-            authority: `https://login.microsoftonline.com/${TENANT_ID}`,
-            redirectUri: window.location.origin,
-          },
-          cache: { cacheLocation: 'sessionStorage' },
-        };
-        const instance = new window.msal.PublicClientApplication(msalConfig);
-        await instance.initialize();
-        msalRef.current = instance;
-        const accs = instance.getAllAccounts();
-        if (accs.length > 0) setAccount(accs[0]);
-        setMsalReady(true);
-      } catch (e) {
-        if (!cancelled) setAuthError('Não foi possível carregar a biblioteca de login da Microsoft.');
-      }
-    }
-    init();
-    return () => { cancelled = true; };
+    msalInstance.initialize().then(() => {
+      const accs = msalInstance.getAllAccounts();
+      if (accs.length > 0) setAccount(accs[0]);
+      setMsalReady(true);
+    }).catch(() => {
+      setAuthError('Falha ao inicializar autenticação Microsoft.');
+      setMsalReady(true);
+    });
   }, []);
 
   function showToast(msg) {
@@ -130,13 +105,12 @@ export default function InventarioTI() {
   }
 
   async function getToken() {
-    const instance = msalRef.current;
-    if (!instance || !account) throw new Error('not signed in');
+    if (!account) throw new Error('not signed in');
     try {
-      const res = await instance.acquireTokenSilent({ scopes: GRAPH_SCOPES, account });
+      const res = await msalInstance.acquireTokenSilent({ scopes: GRAPH_SCOPES, account });
       return res.accessToken;
-    } catch (e) {
-      const res = await instance.acquireTokenPopup({ scopes: GRAPH_SCOPES });
+    } catch {
+      const res = await msalInstance.acquireTokenPopup({ scopes: GRAPH_SCOPES });
       return res.accessToken;
     }
   }
@@ -163,38 +137,30 @@ export default function InventarioTI() {
     setAuthError('');
     setConnecting(true);
     try {
-      const instance = msalRef.current;
-      const res = await instance.loginPopup({ scopes: GRAPH_SCOPES });
+      const res = await msalInstance.loginPopup({ scopes: GRAPH_SCOPES });
       setAccount(res.account);
     } catch (e) {
-      setAuthError(
-        'Falha no login. O endereço deste site (' + window.location.origin +
-        ') provavelmente precisa ser adicionado como "Redirect URI" do tipo SPA no registro do app no Azure AD.'
-      );
+      setAuthError('Falha no login: ' + (e.message || 'verifique o Redirect URI no Azure AD.'));
     } finally {
       setConnecting(false);
     }
   }
 
   async function logout() {
-    try {
-      await msalRef.current.logoutPopup();
-    } catch (e) {}
+    try { await msalInstance.logoutPopup(); } catch {}
     setAccount(null);
     setItems([]);
     setMovements([]);
     graphCtx.current = { siteId: null, itemId: null };
   }
 
-  // ---- Resolve SharePoint site + file once logged in ----
   const ensureGraphContext = useCallback(async () => {
     if (graphCtx.current.siteId && graphCtx.current.itemId) return graphCtx.current;
     const site = await graphFetch(`/sites/${SITE_HOSTNAME}:${SITE_PATH}`);
     const siteId = site.id;
     const encodedPath = FILE_PATH.split('/').map(encodeURIComponent).join('/');
     const drive = await graphFetch(`/sites/${siteId}/drive/root:${encodedPath}`);
-    const itemId = drive.id;
-    graphCtx.current = { siteId, itemId };
+    graphCtx.current = { siteId, itemId: drive.id };
     return graphCtx.current;
   }, [account]);
 
@@ -214,7 +180,7 @@ export default function InventarioTI() {
       setItems((itemsRes.value || []).map((r) => rowToItem(r.values[0])).reverse());
       setMovements((movsRes.value || []).map((r) => rowToMov(r.values[0])).reverse());
     } catch (e) {
-      showToast('Erro ao carregar a planilha: ' + e.message);
+      showToast('Erro ao carregar planilha: ' + e.message);
     } finally {
       setLoading(false);
     }
@@ -222,53 +188,41 @@ export default function InventarioTI() {
 
   useEffect(() => {
     if (account) loadAllData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account]);
 
   async function addRow(tableName, rowValues) {
     const { siteId, itemId } = await ensureGraphContext();
-    const base = workbookBase(siteId, itemId);
-    await graphFetch(`${base}/tables('${tableName}')/rows`, {
+    await graphFetch(`${workbookBase(siteId, itemId)}/tables('${tableName}')/rows`, {
       method: 'POST',
       body: JSON.stringify({ values: [rowValues] }),
     });
   }
 
-  async function findRowIndexById(tableName, idColIndex, idValue) {
+  async function findRowIndex(tableName, idValue) {
     const { siteId, itemId } = await ensureGraphContext();
-    const base = workbookBase(siteId, itemId);
-    const res = await graphFetch(`${base}/tables('${tableName}')/rows`);
-    const rows = res.value || [];
-    for (let i = 0; i < rows.length; i++) {
-      if (rows[i].values[0][idColIndex] === idValue) return i;
-    }
-    return -1;
+    const res = await graphFetch(`${workbookBase(siteId, itemId)}/tables('${tableName}')/rows`);
+    return (res.value || []).findIndex((r) => r.values[0][0] === idValue);
   }
 
-  async function updateRowById(tableName, idColIndex, idValue, rowValues) {
-    const idx = await findRowIndexById(tableName, idColIndex, idValue);
-    if (idx === -1) throw new Error('linha não encontrada na planilha');
+  async function updateRowById(tableName, idValue, rowValues) {
+    const idx = await findRowIndex(tableName, idValue);
+    if (idx === -1) throw new Error('linha não encontrada');
     const { siteId, itemId } = await ensureGraphContext();
-    const base = workbookBase(siteId, itemId);
-    await graphFetch(`${base}/tables('${tableName}')/rows/itemAt(index=${idx})`, {
+    await graphFetch(`${workbookBase(siteId, itemId)}/tables('${tableName}')/rows/itemAt(index=${idx})`, {
       method: 'PATCH',
       body: JSON.stringify({ values: [rowValues] }),
     });
   }
 
-  async function deleteRowById(tableName, idColIndex, idValue) {
-    const idx = await findRowIndexById(tableName, idColIndex, idValue);
+  async function deleteRowById(tableName, idValue) {
+    const idx = await findRowIndex(tableName, idValue);
     if (idx === -1) return;
     const { siteId, itemId } = await ensureGraphContext();
-    const base = workbookBase(siteId, itemId);
-    await graphFetch(`${base}/tables('${tableName}')/rows/itemAt(index=${idx})`, { method: 'DELETE' });
+    await graphFetch(`${workbookBase(siteId, itemId)}/tables('${tableName}')/rows/itemAt(index=${idx})`, { method: 'DELETE' });
   }
 
   function openNewModal() {
-    setEditingItem({
-      id: null, nome: '', categoria: CATEGORIAS[0], patrimonio: '', status: 'Disponível',
-      quantidade: 1, responsavel: '', localizacao: '', dataEntrada: new Date().toISOString().slice(0, 10), obs: '',
-    });
+    setEditingItem({ id: null, nome: '', categoria: CATEGORIAS[0], patrimonio: '', status: 'Disponível', quantidade: 1, responsavel: '', localizacao: '', dataEntrada: new Date().toISOString().slice(0, 10), obs: '' });
     setModalOpen(true);
   }
   function openEditModal(item) {
@@ -282,62 +236,37 @@ export default function InventarioTI() {
     setSyncing(true);
     try {
       const isNew = !editingItem.id;
-      const savedItem = {
-        ...editingItem,
-        quantidade: Math.max(1, parseInt(editingItem.quantidade, 10) || 1),
-        id: isNew ? uid() : editingItem.id,
-        createdAt: isNew ? new Date().toISOString() : editingItem.createdAt,
-      };
-
+      const savedItem = { ...editingItem, quantidade: Math.max(1, parseInt(editingItem.quantidade, 10) || 1), id: isNew ? uid() : editingItem.id, createdAt: isNew ? new Date().toISOString() : editingItem.createdAt };
       if (isNew) {
         await addRow('Itens', itemToRow(savedItem));
         setItems((prev) => [savedItem, ...prev]);
       } else {
-        await updateRowById('Itens', 0, savedItem.id, itemToRow(savedItem));
+        await updateRowById('Itens', savedItem.id, itemToRow(savedItem));
         setItems((prev) => prev.map((it) => (it.id === savedItem.id ? savedItem : it)));
       }
-
-      const mv = {
-        id: uid(), itemId: savedItem.id, itemName: savedItem.nome,
-        action: isNew ? 'Cadastro' : 'Edição', responsavel: savedItem.responsavel || '—',
-        registradoPor: account.name || account.username,
-        date: new Date().toISOString(),
-        obs: isNew ? 'Item cadastrado no inventário' : 'Dados do item atualizados',
-      };
+      const mv = { id: uid(), itemId: savedItem.id, itemName: savedItem.nome, action: isNew ? 'Cadastro' : 'Edição', responsavel: savedItem.responsavel || '—', registradoPor: account.name || account.username, date: new Date().toISOString(), obs: isNew ? 'Item cadastrado' : 'Dados atualizados' };
       await addRow('Movimentacoes', movToRow(mv));
       setMovements((prev) => [mv, ...prev]);
-
-      setModalOpen(false);
-      setEditingItem(null);
+      setModalOpen(false); setEditingItem(null);
       showToast(isNew ? 'Item cadastrado.' : 'Item atualizado.');
     } catch (e) {
-      showToast('Erro ao salvar na planilha: ' + e.message);
-    } finally {
-      setSyncing(false);
-    }
+      showToast('Erro: ' + e.message);
+    } finally { setSyncing(false); }
   }
 
   async function deleteItem(id) {
     const it = items.find((x) => x.id === id);
     setSyncing(true);
     try {
-      await deleteRowById('Itens', 0, id);
+      await deleteRowById('Itens', id);
       setItems((prev) => prev.filter((x) => x.id !== id));
       setConfirmDelete(null);
-      if (it) {
-        const mv = {
-          id: uid(), itemId: id, itemName: it.nome, action: 'Remoção', responsavel: '—',
-          registradoPor: account.name || account.username, date: new Date().toISOString(), obs: 'Item removido do inventário',
-        };
-        await addRow('Movimentacoes', movToRow(mv));
-        setMovements((prev) => [mv, ...prev]);
-      }
+      const mv = { id: uid(), itemId: id, itemName: it?.nome, action: 'Remoção', responsavel: '—', registradoPor: account.name || account.username, date: new Date().toISOString(), obs: 'Item removido' };
+      await addRow('Movimentacoes', movToRow(mv));
+      setMovements((prev) => [mv, ...prev]);
       showToast('Item removido.');
-    } catch (e) {
-      showToast('Erro ao remover na planilha: ' + e.message);
-    } finally {
-      setSyncing(false);
-    }
+    } catch (e) { showToast('Erro: ' + e.message); }
+    finally { setSyncing(false); }
   }
 
   function openMoveModal(item) {
@@ -349,88 +278,55 @@ export default function InventarioTI() {
     e.preventDefault();
     setSyncing(true);
     try {
-      const mv = {
-        id: uid(), itemId: moveItem.itemId, itemName: moveItem.itemName, action: moveItem.action,
-        responsavel: moveItem.responsavel || '—', registradoPor: account.name || account.username,
-        date: new Date().toISOString(), obs: moveItem.obs,
-      };
+      const mv = { id: uid(), itemId: moveItem.itemId, itemName: moveItem.itemName, action: moveItem.action, responsavel: moveItem.responsavel || '—', registradoPor: account.name || account.username, date: new Date().toISOString(), obs: moveItem.obs };
       await addRow('Movimentacoes', movToRow(mv));
       setMovements((prev) => [mv, ...prev]);
-
       const target = items.find((it) => it.id === moveItem.itemId);
       if (target) {
         const updated = { ...target, status: moveItem.newStatus, responsavel: moveItem.newStatus === 'Disponível' ? '' : moveItem.responsavel };
-        await updateRowById('Itens', 0, updated.id, itemToRow(updated));
+        await updateRowById('Itens', updated.id, itemToRow(updated));
         setItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)));
       }
-
-      setMoveModalOpen(false);
-      setMoveItem(null);
+      setMoveModalOpen(false); setMoveItem(null);
       showToast('Movimentação registrada.');
-    } catch (e) {
-      showToast('Erro ao registrar na planilha: ' + e.message);
-    } finally {
-      setSyncing(false);
-    }
+    } catch (e) { showToast('Erro: ' + e.message); }
+    finally { setSyncing(false); }
   }
 
-  const filtered = useMemo(() => {
-    return items.filter((it) => {
-      const matchSearch = !search || it.nome.toLowerCase().includes(search.toLowerCase()) ||
-        (it.patrimonio || '').toLowerCase().includes(search.toLowerCase()) ||
-        (it.responsavel || '').toLowerCase().includes(search.toLowerCase());
-      const matchCat = filterCat === 'Todas' || it.categoria === filterCat;
-      const matchStatus = filterStatus === 'Todos' || it.status === filterStatus;
-      return matchSearch && matchCat && matchStatus;
-    });
-  }, [items, search, filterCat, filterStatus]);
+  const filtered = useMemo(() => items.filter((it) => {
+    const s = search.toLowerCase();
+    const matchSearch = !search || it.nome.toLowerCase().includes(s) || (it.patrimonio || '').toLowerCase().includes(s) || (it.responsavel || '').toLowerCase().includes(s);
+    return matchSearch && (filterCat === 'Todas' || it.categoria === filterCat) && (filterStatus === 'Todos' || it.status === filterStatus);
+  }), [items, search, filterCat, filterStatus]);
 
-  const stats = useMemo(() => {
-    const totalItens = items.length;
-    const totalQtd = items.reduce((sum, i) => sum + (parseInt(i.quantidade, 10) || 1), 0);
-    const disp = items.filter((i) => i.status === 'Disponível').length;
-    const manut = items.filter((i) => i.status === 'Em manutenção').length;
-    return { totalItens, totalQtd, disp, manut };
-  }, [items]);
+  const stats = useMemo(() => ({
+    totalItens: items.length,
+    totalQtd: items.reduce((sum, i) => sum + (parseInt(i.quantidade, 10) || 1), 0),
+    disp: items.filter((i) => i.status === 'Disponível').length,
+    manut: items.filter((i) => i.status === 'Em manutenção').length,
+  }), [items]);
 
   const qtdPorCategoria = useMemo(() => {
     const map = {};
-    items.forEach((it) => {
-      const q = parseInt(it.quantidade, 10) || 1;
-      map[it.categoria] = (map[it.categoria] || 0) + q;
-    });
+    items.forEach((it) => { map[it.categoria] = (map[it.categoria] || 0) + (parseInt(it.quantidade, 10) || 1); });
     return Object.entries(map).sort((a, b) => b[1] - a[1]);
   }, [items]);
 
-  // ---- Render: auth gates ----
-  if (!msalReady) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-stone-100">
-        <p className="text-stone-500 text-sm">Carregando autenticação Microsoft…</p>
-      </div>
-    );
-  }
+  if (!msalReady) return <div className="min-h-screen flex items-center justify-center bg-stone-100"><p className="text-stone-500 text-sm">Carregando…</p></div>;
 
-  if (!account) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-stone-100 px-4">
-        <div className="bg-white rounded-lg border border-stone-200 p-6 w-full max-w-sm text-center">
-          <p className="text-xs tracking-widest uppercase text-stone-400 mb-1">Flash Courier · TI</p>
-          <h1 className="text-lg font-semibold text-stone-900 mb-1">Inventário de equipamentos</h1>
-          <p className="text-sm text-stone-500 mb-5">Entre com sua conta Microsoft 365 para acessar a planilha "Estoque TI".</p>
-          <button
-            onClick={login}
-            disabled={connecting}
-            className="w-full px-4 py-2 text-sm rounded font-medium disabled:opacity-60"
-            style={{ backgroundColor: ACCENT, color: '#fff' }}
-          >
-            {connecting ? 'Conectando…' : 'Entrar com Microsoft'}
-          </button>
-          {authError && <p className="text-xs text-red-700 mt-3 text-left">{authError}</p>}
-        </div>
+  if (!account) return (
+    <div className="min-h-screen flex items-center justify-center bg-stone-100 px-4">
+      <div className="bg-white rounded-lg border border-stone-200 p-6 w-full max-w-sm text-center">
+        <p className="text-xs tracking-widest uppercase text-stone-400 mb-1">Flash Courier · TI</p>
+        <h1 className="text-lg font-semibold text-stone-900 mb-1">Inventário de equipamentos</h1>
+        <p className="text-sm text-stone-500 mb-5">Entre com sua conta Microsoft 365 para acessar a planilha "Estoque TI".</p>
+        <button onClick={login} disabled={connecting} className="w-full px-4 py-2 text-sm rounded font-medium disabled:opacity-60" style={{ backgroundColor: ACCENT, color: '#fff' }}>
+          {connecting ? 'Conectando…' : 'Entrar com Microsoft'}
+        </button>
+        {authError && <p className="text-xs text-red-700 mt-3 text-left">{authError}</p>}
       </div>
-    );
-  }
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-stone-100 text-stone-900 font-sans">
@@ -442,23 +338,15 @@ export default function InventarioTI() {
           </div>
           <div className="flex items-center gap-3">
             {syncing && <span className="text-xs text-stone-400">Sincronizando…</span>}
-            <button onClick={logout} className="text-xs text-stone-400 hover:text-stone-200 underline">
-              {account.name || account.username}
-            </button>
-            <button onClick={loadAllData} className="px-3 py-2 text-sm rounded border border-stone-600 hover:bg-stone-800 transition">
-              Atualizar
-            </button>
-            <button onClick={openNewModal} className="px-3 py-2 text-sm rounded font-medium" style={{ backgroundColor: ACCENT, color: '#fff' }}>
-              + Novo item
-            </button>
+            <button onClick={logout} className="text-xs text-stone-400 hover:text-stone-200 underline">{account.name || account.username}</button>
+            <button onClick={loadAllData} className="px-3 py-2 text-sm rounded border border-stone-600 hover:bg-stone-800 transition">Atualizar</button>
+            <button onClick={openNewModal} className="px-3 py-2 text-sm rounded font-medium" style={{ backgroundColor: ACCENT, color: '#fff' }}>+ Novo item</button>
           </div>
         </div>
       </header>
 
       <div className="max-w-6xl mx-auto px-6 pt-6">
-        {loading ? (
-          <p className="text-sm text-stone-400 py-10 text-center">Carregando dados da planilha…</p>
-        ) : (
+        {loading ? <p className="text-sm text-stone-400 py-10 text-center">Carregando dados da planilha…</p> : (
           <>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
               <StatCard label="Itens cadastrados" value={stats.totalItens} />
@@ -470,95 +358,49 @@ export default function InventarioTI() {
             <div className="flex gap-1 mb-4 border-b border-stone-300">
               <TabButton active={tab === 'itens'} onClick={() => setTab('itens')}>Itens</TabButton>
               <TabButton active={tab === 'quantidades'} onClick={() => setTab('quantidades')}>Quantidade por categoria</TabButton>
-              <TabButton active={tab === 'historico'} onClick={() => setTab('historico')}>Histórico de movimentação</TabButton>
+              <TabButton active={tab === 'historico'} onClick={() => setTab('historico')}>Histórico</TabButton>
             </div>
 
             {tab === 'itens' && (
               <>
                 <div className="flex flex-wrap gap-2 mb-4">
-                  <input type="text" placeholder="Buscar por nome, patrimônio ou responsável" value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    className="flex-1 min-w-[220px] px-3 py-2 rounded border border-stone-300 bg-white text-sm" />
+                  <input type="text" placeholder="Buscar por nome, patrimônio ou responsável" value={search} onChange={(e) => setSearch(e.target.value)} className="flex-1 min-w-[220px] px-3 py-2 rounded border border-stone-300 bg-white text-sm" />
                   <select value={filterCat} onChange={(e) => setFilterCat(e.target.value)} className="px-3 py-2 rounded border border-stone-300 bg-white text-sm">
-                    <option>Todas</option>
-                    {CATEGORIAS.map((c) => <option key={c}>{c}</option>)}
+                    <option>Todas</option>{CATEGORIAS.map((c) => <option key={c}>{c}</option>)}
                   </select>
                   <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="px-3 py-2 rounded border border-stone-300 bg-white text-sm">
-                    <option>Todos</option>
-                    {STATUS.map((s) => <option key={s}>{s}</option>)}
+                    <option>Todos</option>{STATUS.map((s) => <option key={s}>{s}</option>)}
                   </select>
                 </div>
-
-                {filtered.length === 0 ? (
-                  <div className="text-center py-16 text-stone-400 border border-dashed border-stone-300 rounded-lg">
-                    {items.length === 0 ? 'Nenhum item cadastrado ainda. Clique em "Novo item" para começar.' : 'Nenhum item encontrado com esses filtros.'}
-                  </div>
-                ) : (
-                  <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 pb-10">
-                    {filtered.map((it) => (
-                      <ItemCard key={it.id} item={it} onEdit={() => openEditModal(it)} onDelete={() => setConfirmDelete(it)} onMove={() => openMoveModal(it)} />
-                    ))}
-                  </div>
-                )}
+                {filtered.length === 0
+                  ? <div className="text-center py-16 text-stone-400 border border-dashed border-stone-300 rounded-lg">{items.length === 0 ? 'Nenhum item cadastrado. Clique em "+ Novo item".' : 'Nenhum item encontrado.'}</div>
+                  : <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 pb-10">{filtered.map((it) => <ItemCard key={it.id} item={it} onEdit={() => openEditModal(it)} onDelete={() => setConfirmDelete(it)} onMove={() => openMoveModal(it)} />)}</div>}
               </>
             )}
 
             {tab === 'quantidades' && (
               <div className="pb-10">
-                {qtdPorCategoria.length === 0 ? (
-                  <div className="text-center py-16 text-stone-400 border border-dashed border-stone-300 rounded-lg">Nenhum item cadastrado ainda.</div>
-                ) : (
-                  <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
-                    <table className="w-full text-sm">
-                      <thead className="bg-stone-50 text-stone-500 text-xs uppercase">
-                        <tr><th className="text-left px-4 py-2 font-medium">Categoria / caixa</th><th className="text-right px-4 py-2 font-medium">Quantidade total</th></tr>
-                      </thead>
-                      <tbody>
-                        {qtdPorCategoria.map(([cat, qtd]) => (
-                          <tr key={cat} className="border-t border-stone-100">
-                            <td className="px-4 py-2">{cat}</td>
-                            <td className="px-4 py-2 text-right font-medium" style={{ color: ACCENT_DARK }}>{qtd}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                {qtdPorCategoria.length === 0
+                  ? <div className="text-center py-16 text-stone-400 border border-dashed border-stone-300 rounded-lg">Nenhum item cadastrado.</div>
+                  : <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead className="bg-stone-50 text-stone-500 text-xs uppercase"><tr><th className="text-left px-4 py-2 font-medium">Categoria / caixa</th><th className="text-right px-4 py-2 font-medium">Quantidade total</th></tr></thead>
+                        <tbody>{qtdPorCategoria.map(([cat, qtd]) => <tr key={cat} className="border-t border-stone-100"><td className="px-4 py-2">{cat}</td><td className="px-4 py-2 text-right font-medium" style={{ color: ACCENT_DARK }}>{qtd}</td></tr>)}</tbody>
+                      </table>
+                    </div>}
               </div>
             )}
 
             {tab === 'historico' && (
               <div className="pb-10">
-                {movements.length === 0 ? (
-                  <div className="text-center py-16 text-stone-400 border border-dashed border-stone-300 rounded-lg">Nenhuma movimentação registrada ainda.</div>
-                ) : (
-                  <div className="bg-white rounded-lg border border-stone-200 overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead className="bg-stone-50 text-stone-500 text-xs uppercase">
-                        <tr>
-                          <th className="text-left px-4 py-2 font-medium">Data</th>
-                          <th className="text-left px-4 py-2 font-medium">Item</th>
-                          <th className="text-left px-4 py-2 font-medium">Ação</th>
-                          <th className="text-left px-4 py-2 font-medium">Responsável</th>
-                          <th className="text-left px-4 py-2 font-medium">Registrado por</th>
-                          <th className="text-left px-4 py-2 font-medium">Observação</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {movements.map((mv) => (
-                          <tr key={mv.id} className="border-t border-stone-100">
-                            <td className="px-4 py-2 whitespace-nowrap text-stone-500">{fmtDateTime(mv.date)}</td>
-                            <td className="px-4 py-2 font-medium">{mv.itemName}</td>
-                            <td className="px-4 py-2">{mv.action}</td>
-                            <td className="px-4 py-2">{mv.responsavel}</td>
-                            <td className="px-4 py-2 text-stone-500">{mv.registradoPor || '—'}</td>
-                            <td className="px-4 py-2 text-stone-500">{mv.obs || '—'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                {movements.length === 0
+                  ? <div className="text-center py-16 text-stone-400 border border-dashed border-stone-300 rounded-lg">Nenhuma movimentação registrada.</div>
+                  : <div className="bg-white rounded-lg border border-stone-200 overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-stone-50 text-stone-500 text-xs uppercase"><tr><th className="text-left px-4 py-2 font-medium">Data</th><th className="text-left px-4 py-2 font-medium">Item</th><th className="text-left px-4 py-2 font-medium">Ação</th><th className="text-left px-4 py-2 font-medium">Responsável</th><th className="text-left px-4 py-2 font-medium">Registrado por</th><th className="text-left px-4 py-2 font-medium">Obs</th></tr></thead>
+                        <tbody>{movements.map((mv) => <tr key={mv.id} className="border-t border-stone-100"><td className="px-4 py-2 whitespace-nowrap text-stone-500">{fmtDateTime(mv.date)}</td><td className="px-4 py-2 font-medium">{mv.itemName}</td><td className="px-4 py-2">{mv.action}</td><td className="px-4 py-2">{mv.responsavel}</td><td className="px-4 py-2 text-stone-500">{mv.registradoPor || '—'}</td><td className="px-4 py-2 text-stone-500">{mv.obs || '—'}</td></tr>)}</tbody>
+                      </table>
+                    </div>}
               </div>
             )}
           </>
@@ -568,49 +410,24 @@ export default function InventarioTI() {
       {modalOpen && editingItem && (
         <Modal onClose={() => { setModalOpen(false); setEditingItem(null); }} title={editingItem.id ? 'Editar item' : 'Novo item'}>
           <form onSubmit={saveItem} className="space-y-3">
-            <Field label="Nome / descrição">
-              <input type="text" value={editingItem.nome} onChange={(e) => setEditingItem({ ...editingItem, nome: e.target.value })}
-                placeholder="Ex: Notebook Dell Latitude 5420" className="w-full px-3 py-2 rounded border border-stone-300 text-sm" required />
-            </Field>
+            <Field label="Nome / descrição"><input type="text" value={editingItem.nome} onChange={(e) => setEditingItem({ ...editingItem, nome: e.target.value })} placeholder="Ex: Notebook Dell Latitude 5420" className="w-full px-3 py-2 rounded border border-stone-300 text-sm" required /></Field>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Categoria / caixa">
-                <select value={editingItem.categoria} onChange={(e) => setEditingItem({ ...editingItem, categoria: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm">
-                  {CATEGORIAS.map((c) => <option key={c}>{c}</option>)}
-                </select>
-              </Field>
-              <Field label="Quantidade">
-                <input type="number" min="1" value={editingItem.quantidade ?? 1} onChange={(e) => setEditingItem({ ...editingItem, quantidade: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm" />
-              </Field>
+              <Field label="Categoria / caixa"><select value={editingItem.categoria} onChange={(e) => setEditingItem({ ...editingItem, categoria: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm">{CATEGORIAS.map((c) => <option key={c}>{c}</option>)}</select></Field>
+              <Field label="Quantidade"><input type="number" min="1" value={editingItem.quantidade ?? 1} onChange={(e) => setEditingItem({ ...editingItem, quantidade: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm" /></Field>
             </div>
-            <Field label="Status">
-              <select value={editingItem.status} onChange={(e) => setEditingItem({ ...editingItem, status: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm">
-                {STATUS.map((s) => <option key={s}>{s}</option>)}
-              </select>
-            </Field>
+            <Field label="Status"><select value={editingItem.status} onChange={(e) => setEditingItem({ ...editingItem, status: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm">{STATUS.map((s) => <option key={s}>{s}</option>)}</select></Field>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Nº patrimônio / serial">
-                <input type="text" value={editingItem.patrimonio} onChange={(e) => setEditingItem({ ...editingItem, patrimonio: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm" />
-              </Field>
-              <Field label="Localização (sala/caixa)">
-                <input type="text" value={editingItem.localizacao} onChange={(e) => setEditingItem({ ...editingItem, localizacao: e.target.value })} placeholder="Ex: Caixa HDMI" className="w-full px-3 py-2 rounded border border-stone-300 text-sm" />
-              </Field>
+              <Field label="Nº patrimônio / serial"><input type="text" value={editingItem.patrimonio} onChange={(e) => setEditingItem({ ...editingItem, patrimonio: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm" /></Field>
+              <Field label="Localização"><input type="text" value={editingItem.localizacao} onChange={(e) => setEditingItem({ ...editingItem, localizacao: e.target.value })} placeholder="Ex: Caixa HDMI" className="w-full px-3 py-2 rounded border border-stone-300 text-sm" /></Field>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Responsável atual">
-                <input type="text" value={editingItem.responsavel} onChange={(e) => setEditingItem({ ...editingItem, responsavel: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm" />
-              </Field>
-              <Field label="Data de entrada">
-                <input type="date" value={editingItem.dataEntrada} onChange={(e) => setEditingItem({ ...editingItem, dataEntrada: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm" />
-              </Field>
+              <Field label="Responsável atual"><input type="text" value={editingItem.responsavel} onChange={(e) => setEditingItem({ ...editingItem, responsavel: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm" /></Field>
+              <Field label="Data de entrada"><input type="date" value={editingItem.dataEntrada} onChange={(e) => setEditingItem({ ...editingItem, dataEntrada: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm" /></Field>
             </div>
-            <Field label="Observações">
-              <textarea value={editingItem.obs} onChange={(e) => setEditingItem({ ...editingItem, obs: e.target.value })} rows={2} className="w-full px-3 py-2 rounded border border-stone-300 text-sm" />
-            </Field>
+            <Field label="Observações"><textarea value={editingItem.obs} onChange={(e) => setEditingItem({ ...editingItem, obs: e.target.value })} rows={2} className="w-full px-3 py-2 rounded border border-stone-300 text-sm" /></Field>
             <div className="flex justify-end gap-2 pt-2">
               <button type="button" onClick={() => { setModalOpen(false); setEditingItem(null); }} className="px-4 py-2 text-sm rounded border border-stone-300">Cancelar</button>
-              <button type="submit" disabled={syncing} className="px-4 py-2 text-sm rounded font-medium disabled:opacity-60" style={{ backgroundColor: ACCENT, color: '#fff' }}>
-                {syncing ? 'Salvando…' : 'Salvar'}
-              </button>
+              <button type="submit" disabled={syncing} className="px-4 py-2 text-sm rounded font-medium disabled:opacity-60" style={{ backgroundColor: ACCENT, color: '#fff' }}>{syncing ? 'Salvando…' : 'Salvar'}</button>
             </div>
           </form>
         </Modal>
@@ -619,28 +436,14 @@ export default function InventarioTI() {
       {moveModalOpen && moveItem && (
         <Modal onClose={() => { setMoveModalOpen(false); setMoveItem(null); }} title={`Movimentar — ${moveItem.itemName}`}>
           <form onSubmit={saveMovement} className="space-y-3">
-            <Field label="Ação">
-              <select value={moveItem.action} onChange={(e) => setMoveItem({ ...moveItem, action: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm">
-                <option>Retirada</option><option>Devolução</option><option>Envio para manutenção</option><option>Retorno de manutenção</option><option>Baixa</option>
-              </select>
-            </Field>
-            <Field label="Novo status do item">
-              <select value={moveItem.newStatus} onChange={(e) => setMoveItem({ ...moveItem, newStatus: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm">
-                {STATUS.map((s) => <option key={s}>{s}</option>)}
-              </select>
-            </Field>
-            <Field label="Responsável">
-              <input type="text" value={moveItem.responsavel} onChange={(e) => setMoveItem({ ...moveItem, responsavel: e.target.value })} placeholder="Quem está pegando/devolvendo" className="w-full px-3 py-2 rounded border border-stone-300 text-sm" />
-            </Field>
-            <Field label="Observação">
-              <textarea value={moveItem.obs} onChange={(e) => setMoveItem({ ...moveItem, obs: e.target.value })} rows={2} className="w-full px-3 py-2 rounded border border-stone-300 text-sm" />
-            </Field>
+            <Field label="Ação"><select value={moveItem.action} onChange={(e) => setMoveItem({ ...moveItem, action: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm"><option>Retirada</option><option>Devolução</option><option>Envio para manutenção</option><option>Retorno de manutenção</option><option>Baixa</option></select></Field>
+            <Field label="Novo status"><select value={moveItem.newStatus} onChange={(e) => setMoveItem({ ...moveItem, newStatus: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm">{STATUS.map((s) => <option key={s}>{s}</option>)}</select></Field>
+            <Field label="Responsável"><input type="text" value={moveItem.responsavel} onChange={(e) => setMoveItem({ ...moveItem, responsavel: e.target.value })} placeholder="Quem está pegando/devolvendo" className="w-full px-3 py-2 rounded border border-stone-300 text-sm" /></Field>
+            <Field label="Observação"><textarea value={moveItem.obs} onChange={(e) => setMoveItem({ ...moveItem, obs: e.target.value })} rows={2} className="w-full px-3 py-2 rounded border border-stone-300 text-sm" /></Field>
             <p className="text-xs text-stone-400">Registrado por: {account.name || account.username}</p>
             <div className="flex justify-end gap-2 pt-2">
               <button type="button" onClick={() => { setMoveModalOpen(false); setMoveItem(null); }} className="px-4 py-2 text-sm rounded border border-stone-300">Cancelar</button>
-              <button type="submit" disabled={syncing} className="px-4 py-2 text-sm rounded font-medium disabled:opacity-60" style={{ backgroundColor: ACCENT, color: '#fff' }}>
-                {syncing ? 'Salvando…' : 'Registrar'}
-              </button>
+              <button type="submit" disabled={syncing} className="px-4 py-2 text-sm rounded font-medium disabled:opacity-60" style={{ backgroundColor: ACCENT, color: '#fff' }}>{syncing ? 'Salvando…' : 'Registrar'}</button>
             </div>
           </form>
         </Modal>
@@ -648,7 +451,7 @@ export default function InventarioTI() {
 
       {confirmDelete && (
         <Modal onClose={() => setConfirmDelete(null)} title="Remover item">
-          <p className="text-sm text-stone-600 mb-4">Tem certeza que deseja remover <strong>{confirmDelete.nome}</strong> do inventário? Essa ação não pode ser desfeita.</p>
+          <p className="text-sm text-stone-600 mb-4">Tem certeza que deseja remover <strong>{confirmDelete.nome}</strong>? Essa ação não pode ser desfeita.</p>
           <div className="flex justify-end gap-2">
             <button onClick={() => setConfirmDelete(null)} className="px-4 py-2 text-sm rounded border border-stone-300">Cancelar</button>
             <button onClick={() => deleteItem(confirmDelete.id)} disabled={syncing} className="px-4 py-2 text-sm rounded font-medium bg-red-700 text-white disabled:opacity-60">Remover</button>
@@ -656,39 +459,23 @@ export default function InventarioTI() {
         </Modal>
       )}
 
-      {toast && (
-        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 bg-stone-900 text-white text-sm px-4 py-2 rounded shadow-lg z-50 max-w-md text-center">
-          {toast}
-        </div>
-      )}
+      {toast && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 bg-stone-900 text-white text-sm px-4 py-2 rounded shadow-lg z-50 max-w-md text-center">{toast}</div>}
     </div>
   );
 }
 
 function StatCard({ label, value, color }) {
-  return (
-    <div className="bg-white rounded-lg border border-stone-200 px-4 py-3">
-      <p className="text-xs text-stone-500 mb-1">{label}</p>
-      <p className="text-2xl font-semibold" style={color ? { color: color.text } : undefined}>{value}</p>
-    </div>
-  );
+  return <div className="bg-white rounded-lg border border-stone-200 px-4 py-3"><p className="text-xs text-stone-500 mb-1">{label}</p><p className="text-2xl font-semibold" style={color ? { color: color.text } : undefined}>{value}</p></div>;
 }
 function TabButton({ active, onClick, children }) {
-  return (
-    <button onClick={onClick} className={`px-4 py-2 text-sm font-medium border-b-2 transition ${active ? 'border-stone-900 text-stone-900' : 'border-transparent text-stone-400 hover:text-stone-600'}`}>
-      {children}
-    </button>
-  );
+  return <button onClick={onClick} className={`px-4 py-2 text-sm font-medium border-b-2 transition ${active ? 'border-stone-900 text-stone-900' : 'border-transparent text-stone-400 hover:text-stone-600'}`}>{children}</button>;
 }
 function ItemCard({ item, onEdit, onDelete, onMove }) {
   const color = STATUS_COLOR[item.status] || STATUS_COLOR['Disponível'];
   return (
     <div className="bg-white rounded-lg border border-stone-200 p-4 flex flex-col gap-2">
       <div className="flex items-start justify-between gap-2">
-        <div>
-          <p className="font-medium text-stone-900 leading-snug">{item.nome}</p>
-          <p className="text-xs text-stone-400">{item.categoria}</p>
-        </div>
+        <div><p className="font-medium text-stone-900 leading-snug">{item.nome}</p><p className="text-xs text-stone-400">{item.categoria}</p></div>
         <span className="text-xs px-2 py-1 rounded font-medium whitespace-nowrap" style={{ backgroundColor: color.bg, color: color.text }}>{item.status}</span>
       </div>
       <div className="text-xs text-stone-500 space-y-0.5 mt-1">
@@ -708,12 +495,7 @@ function ItemCard({ item, onEdit, onDelete, onMove }) {
   );
 }
 function Field({ label, children }) {
-  return (
-    <label className="block">
-      <span className="block text-xs font-medium text-stone-500 mb-1">{label}</span>
-      {children}
-    </label>
-  );
+  return <label className="block"><span className="block text-xs font-medium text-stone-500 mb-1">{label}</span>{children}</label>;
 }
 function Modal({ title, children, onClose }) {
   return (
