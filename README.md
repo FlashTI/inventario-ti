@@ -1,89 +1,39 @@
-# Correção — Graph 404 ItemNotFound no SharePoint
+# Inventário TI - Correção Graph 404 em tabelas vazias
 
-Este pacote remove a dependência do endpoint `/shares/{shareId}/driveItem`, que retornou:
+Esta versão mantém o caminho do SharePoint:
 
-```txt
-Graph 404: ItemNotFound
-```
+- Site: `flashcouriercombr.sharepoint.com:/sites/Suporte_Tcnico`
+- Arquivo: `ESTOQUE TI/Estoque TI.xlsx`
 
-Agora o app resolve a planilha pelo caminho real do SharePoint:
+## O que foi ajustado
 
-```txt
-Host: flashcouriercombr.sharepoint.com
-Site: /sites/Suporte_Tcnico
-Arquivo: ESTOQUE TI/Estoque TI.xlsx
-```
+1. O app agora lista as tabelas do workbook antes de buscar linhas.
+2. Se a tabela `Itens` ou `Movimentacoes` existir, mas estiver vazia, o erro `Graph 404 ItemNotFound` é tratado como lista vazia.
+3. A inclusão de linhas passou a tentar o endpoint recomendado `/rows/add` e mantém fallback para `/rows`.
+4. As mensagens de erro ficaram mais claras quando a tabela real do Excel não existe.
 
-A lógica nova faz:
+## Estrutura obrigatória da planilha
 
-1. Localiza o site:
+A planilha precisa ter tabelas reais do Excel, não apenas abas:
 
-```txt
-/sites/flashcouriercombr.sharepoint.com:/sites/Suporte_Tcnico
-```
+- Tabela: `Itens`
+- Tabela: `Movimentacoes`
 
-2. Tenta encontrar o arquivo na biblioteca padrão:
+No Excel: clique dentro da tabela > Design da Tabela > Nome da Tabela.
 
-```txt
-/sites/{siteId}/drive/root:/ESTOQUE%20TI/Estoque%20TI.xlsx
-```
+## Permissões Azure
 
-3. Se não achar, lista todas as bibliotecas do site:
+Manter permissões delegadas do Microsoft Graph:
 
-```txt
-/sites/{siteId}/drives
-```
+- `Files.ReadWrite.All`
+- `Sites.ReadWrite.All`
+- `User.Read`
 
-4. Tenta localizar o arquivo em cada biblioteca:
-
-```txt
-/drives/{driveId}/root:/ESTOQUE%20TI/Estoque%20TI.xlsx
-```
-
-5. Depois usa o `driveId` e `itemId` encontrados para acessar o workbook:
-
-```txt
-/drives/{driveId}/items/{itemId}/workbook
-```
-
-## Arquivos no pacote
-
-- `src/App.jsx`
-- `redirect.html`
-- `vite.config.js`
-- `README.md`
-
-## Permissões necessárias no Azure / Microsoft Entra ID
-
-No App Registration `37ff5e3e-1558-4add-b4e9-8e5c97e21943`, mantenha as permissões delegadas:
-
-```txt
-Files.ReadWrite.All
-Sites.ReadWrite.All
-User.Read
-```
-
-Depois clique em:
-
-```txt
-Grant admin consent
-```
+Com admin consent concedido.
 
 ## Redirect URI
 
-Mantenha estes Redirect URIs em **Authentication → Single-page application**:
+Cadastrar em Authentication > Single-page application:
 
-```txt
-https://inventario-ti-ten.vercel.app/redirect.html
-http://localhost:5173/redirect.html
-```
-
-## Atenção
-
-Se depois desta correção voltar o erro `Graph 403 EditModeAccessDenied`, o caminho foi encontrado, mas o usuário logado não possui permissão de edição na planilha.
-
-O usuário precisa conseguir abrir e editar manualmente:
-
-```txt
-https://flashcouriercombr.sharepoint.com/:x:/r/sites/Suporte_Tcnico/Documentos%20Partilhados/ESTOQUE%20TI/Estoque%20TI.xlsx
-```
+- `https://inventario-ti-ten.vercel.app/redirect.html`
+- `http://localhost:5173/redirect.html`
