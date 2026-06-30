@@ -2,57 +2,50 @@
 
 App standalone (React + Vite) para controle de inventário da sala de TI, conectado à planilha "Estoque TI.xlsx" no SharePoint via Microsoft Graph.
 
-## Deploy no Vercel (recomendado, gratuito)
+## Correção MSAL v5
 
-1. Crie uma conta em https://vercel.com (pode entrar com GitHub, GitLab ou e-mail).
-2. Suba esta pasta para um repositório no GitHub (ou GitLab/Bitbucket):
-   ```
-   git init
-   git add .
-   git commit -m "Inventário TI inicial"
-   git remote add origin <URL_DO_SEU_REPOSITORIO>
-   git push -u origin main
-   ```
-3. No painel do Vercel, clique em **Add New → Project**, selecione o repositório.
-4. Framework Preset: o Vercel detecta "Vite" automaticamente. Não precisa mudar nada (Build Command: `npm run build`, Output Directory: `dist`).
-5. Clique em **Deploy**. Em ~1 minuto você terá uma URL tipo `https://inventario-ti-flash-courier.vercel.app`.
+Este projeto usa `@azure/msal-browser` v5. Por isso, o retorno de autenticação deve usar uma página dedicada com `redirect-bridge`, e não uma página totalmente em branco.
 
-## Passo OBRIGATÓRIO depois do deploy: atualizar o Azure AD
+Arquivos importantes:
 
-O login da Microsoft só funciona em domínios cadastrados como "Redirect URI". Depois do deploy:
+- `redirect.html` — página dedicada de retorno do login Microsoft.
+- `vite.config.js` — inclui `redirect.html` como segunda entrada no build do Vite.
+- `src/App.jsx` — usa `https://SEU-DOMINIO/redirect.html` como `redirectUri`.
 
-1. Copie a URL final do Vercel (ex: `https://inventario-ti-flash-courier.vercel.app`).
-2. Vá em https://entra.microsoft.com → **Registros de aplicativo** → seu app → **Autenticação**.
-3. Em **Redirecionamentos da Web — Single-page application**, clique em **Adicionar URI** e cadastre também a URL de autenticação em branco:
-   ```
-   https://SEU-DOMINIO-VERCEL/blank.html
-   ```
-   Exemplo:
-   ```
-   https://inventario-ti-flash-courier.vercel.app/blank.html
-   ```
-4. Para teste local, cadastre também:
-   ```
-   http://localhost:5173/blank.html
-   ```
-5. Salve.
+Se existir `public/blank.html` de uma tentativa anterior, pode excluir esse arquivo.
 
-Sem esse passo, o login pode falhar com `redirect_uri mismatch`, CORS ou erro de pop-up aninhado no MSAL.
+## Passo obrigatório no Azure / Microsoft Entra ID
 
-## Domínio próprio (opcional)
+No portal Microsoft Entra ID:
 
-No painel do projeto no Vercel, em **Settings → Domains**, você pode apontar um domínio próprio da empresa (ex: `inventario.flashcourier.com.br`), criando o CNAME indicado pelo Vercel no DNS do domínio. Depois, repita o passo acima de adicionar essa URL nova como Redirect URI no Azure AD.
+1. Vá em **App registrations**.
+2. Abra o app com Client ID `37ff5e3e-1558-4add-b4e9-8e5c97e21943`.
+3. Vá em **Authentication**.
+4. Em **Single-page application**, cadastre exatamente:
 
-## Rodando localmente (opcional, para testar antes de publicar)
-
+```txt
+https://inventario-ti-ten.vercel.app/redirect.html
 ```
+
+Para teste local, cadastre também:
+
+```txt
+http://localhost:5173/redirect.html
+```
+
+Depois salve e faça um novo deploy no Vercel.
+
+## Rodando localmente
+
+```bash
 npm install
 npm run dev
 ```
-Abre em `http://localhost:5173`. Lembre de adicionar `http://localhost:5173/blank.html` como Redirect URI no Azure AD se quiser testar o login localmente.
 
-## Estrutura
+A aplicação abre em:
 
-- `src/App.jsx` — toda a aplicação (UI + integração com Microsoft Graph/Excel)
-- `index.html` — carrega o Tailwind via CDN
-- A biblioteca MSAL (login Microsoft) fica nas dependências do projeto (`@azure/msal-browser`).
+```txt
+http://localhost:5173
+```
+
+A página `redirect.html` só é usada pelo fluxo de autenticação. Se você abrir `/redirect.html` manualmente, verá apenas uma página simples de processamento.

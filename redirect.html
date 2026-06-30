@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Autenticação</title>
+  </head>
+  <body>
+    <p>Processando autenticação...</p>
+    <script type="module">
+      import { broadcastResponseToMainFrame } from "@azure/msal-browser/redirect-bridge";
+
+      broadcastResponseToMainFrame().catch((error) => {
+        console.error("Erro ao processar retorno da autenticação:", error);
+      });
+    </script>
+  </body>
+</html>

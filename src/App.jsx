@@ -26,14 +26,14 @@ const SITE_HOSTNAME = 'flashcouriercombr.sharepoint.com';
 const SITE_PATH = '/sites/Suporte_Tcnico';
 const FILE_PATH = '/ESTOQUE TI/Estoque TI.xlsx';
 const GRAPH_SCOPES = ['Files.ReadWrite', 'Sites.Read.All', 'User.Read'];
-const AUTH_REDIRECT_URI = `${window.location.origin}/blank.html`;
+const AUTH_REDIRECT_URI = `${window.location.origin}/redirect.html`;
 
 const msalConfig = {
   auth: {
     clientId: CLIENT_ID,
     authority: `https://login.microsoftonline.com/${TENANT_ID}`,
     redirectUri: AUTH_REDIRECT_URI,
-    postLogoutRedirectUri: window.location.origin,
+    postLogoutRedirectUri: AUTH_REDIRECT_URI,
   },
   cache: { cacheLocation: 'sessionStorage', storeAuthStateInCookie: false },
 };
