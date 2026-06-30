@@ -23,10 +23,21 @@ O login da Microsoft só funciona em domínios cadastrados como "Redirect URI". 
 
 1. Copie a URL final do Vercel (ex: `https://inventario-ti-flash-courier.vercel.app`).
 2. Vá em https://entra.microsoft.com → **Registros de aplicativo** → seu app → **Autenticação**.
-3. Em **Redirecionamentos da Web — Single-page application**, clique em **Adicionar URI** e cole a URL do Vercel (sem barra `/` no final).
-4. Salve.
+3. Em **Redirecionamentos da Web — Single-page application**, clique em **Adicionar URI** e cadastre também a URL de autenticação em branco:
+   ```
+   https://SEU-DOMINIO-VERCEL/blank.html
+   ```
+   Exemplo:
+   ```
+   https://inventario-ti-flash-courier.vercel.app/blank.html
+   ```
+4. Para teste local, cadastre também:
+   ```
+   http://localhost:5173/blank.html
+   ```
+5. Salve.
 
-Sem esse passo, o login vai falhar com erro de "redirect_uri mismatch".
+Sem esse passo, o login pode falhar com `redirect_uri mismatch`, CORS ou erro de pop-up aninhado no MSAL.
 
 ## Domínio próprio (opcional)
 
@@ -38,10 +49,10 @@ No painel do projeto no Vercel, em **Settings → Domains**, você pode apontar 
 npm install
 npm run dev
 ```
-Abre em `http://localhost:5173`. Lembre de adicionar também essa URL como Redirect URI no Azure AD se quiser testar o login localmente.
+Abre em `http://localhost:5173`. Lembre de adicionar `http://localhost:5173/blank.html` como Redirect URI no Azure AD se quiser testar o login localmente.
 
 ## Estrutura
 
 - `src/App.jsx` — toda a aplicação (UI + integração com Microsoft Graph/Excel)
 - `index.html` — carrega o Tailwind via CDN
-- A biblioteca MSAL (login Microsoft) é carregada dinamicamente via CDN dentro do próprio app, não precisa instalar nada extra.
+- A biblioteca MSAL (login Microsoft) fica nas dependências do projeto (`@azure/msal-browser`).

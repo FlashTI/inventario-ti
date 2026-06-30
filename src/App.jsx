@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { PublicClientApplication } from '@azure/msal-browser';
+import { PublicClientApplication, InteractionRequiredAuthError } from '@azure/msal-browser';
 
 const CATEGORIAS = [
   'Limpeza', 'HDMI', 'VGA', 'Memória RAM / Placa de rede', 'ATX',
@@ -26,12 +26,14 @@ const SITE_HOSTNAME = 'flashcouriercombr.sharepoint.com';
 const SITE_PATH = '/sites/Suporte_Tcnico';
 const FILE_PATH = '/ESTOQUE TI/Estoque TI.xlsx';
 const GRAPH_SCOPES = ['Files.ReadWrite', 'Sites.Read.All', 'User.Read'];
+const AUTH_REDIRECT_URI = `${window.location.origin}/blank.html`;
 
 const msalConfig = {
   auth: {
     clientId: CLIENT_ID,
     authority: `https://login.microsoftonline.com/${TENANT_ID}`,
-    redirectUri: window.location.origin,
+    redirectUri: AUTH_REDIRECT_URI,
+    postLogoutRedirectUri: window.location.origin,
   },
   cache: { cacheLocation: 'sessionStorage', storeAuthStateInCookie: false },
 };
@@ -89,9 +91,14 @@ export default function InventarioTI() {
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
-    msalInstance.initialize().then(() => {
+    msalInstance.initialize().then(async () => {
+      const redirectResult = await msalInstance.handleRedirectPromise().catch(() => null);
       const accs = msalInstance.getAllAccounts();
-      if (accs.length > 0) setAccount(accs[0]);
+      const activeAccount = redirectResult?.account || msalInstance.getActiveAccount() || accs[0] || null;
+      if (activeAccount) {
+        msalInstance.setActiveAccount(activeAccount);
+        setAccount(activeAccount);
+      }
       setMsalReady(true);
     }).catch(() => {
       setAuthError('Falha ao inicializar autenticação Microsoft.');
@@ -106,11 +113,17 @@ export default function InventarioTI() {
 
   async function getToken() {
     if (!account) throw new Error('not signed in');
+    const tokenRequest = { scopes: GRAPH_SCOPES, account, redirectUri: AUTH_REDIRECT_URI };
     try {
-      const res = await msalInstance.acquireTokenSilent({ scopes: GRAPH_SCOPES, account });
+      const res = await msalInstance.acquireTokenSilent(tokenRequest);
       return res.accessToken;
-    } catch {
-      const res = await msalInstance.acquireTokenPopup({ scopes: GRAPH_SCOPES });
+    } catch (e) {
+      const precisaInteracao = e instanceof InteractionRequiredAuthError
+        || ['interaction_required', 'consent_required', 'login_required'].includes(e?.errorCode);
+
+      if (!precisaInteracao) throw e;
+
+      const res = await msalInstance.acquireTokenPopup(tokenRequest);
       return res.accessToken;
     }
   }
@@ -137,7 +150,8 @@ export default function InventarioTI() {
     setAuthError('');
     setConnecting(true);
     try {
-      const res = await msalInstance.loginPopup({ scopes: GRAPH_SCOPES });
+      const res = await msalInstance.loginPopup({ scopes: GRAPH_SCOPES, redirectUri: AUTH_REDIRECT_URI });
+      msalInstance.setActiveAccount(res.account);
       setAccount(res.account);
     } catch (e) {
       setAuthError('Falha no login: ' + (e.message || 'verifique o Redirect URI no Azure AD.'));
