@@ -1,39 +1,25 @@
-# Inventário TI - Correção Graph 404 em tabelas vazias
+# Correção da planilha do Inventário TI
 
-Esta versão mantém o caminho do SharePoint:
+Este pacote corrige o erro:
 
-- Site: `flashcouriercombr.sharepoint.com:/sites/Suporte_Tcnico`
-- Arquivo: `ESTOQUE TI/Estoque TI.xlsx`
+`tabela "Movimentacoes" não encontrada na planilha. Tabelas encontradas: ListasApp.`
 
 ## O que foi ajustado
 
-1. O app agora lista as tabelas do workbook antes de buscar linhas.
-2. Se a tabela `Itens` ou `Movimentacoes` existir, mas estiver vazia, o erro `Graph 404 ItemNotFound` é tratado como lista vazia.
-3. A inclusão de linhas passou a tentar o endpoint recomendado `/rows/add` e mantém fallback para `/rows`.
-4. As mensagens de erro ficaram mais claras quando a tabela real do Excel não existe.
+- `Estoque TI.xlsx` foi recriada com tabelas reais do Excel:
+  - `Itens`
+  - `Movimentacoes`
+  - `ListasApp`
+- As tabelas `Itens` e `Movimentacoes` têm uma linha técnica com ID `__MODELO__` para o Microsoft Graph reconhecer a tabela como ativa.
+- `src/App.jsx` foi ajustado para ignorar linhas com ID `__MODELO__`.
 
-## Estrutura obrigatória da planilha
+## Como usar
 
-A planilha precisa ter tabelas reais do Excel, não apenas abas:
+1. Substitua no SharePoint o arquivo atual por este arquivo:
+   `Estoque TI.xlsx`
+2. O caminho deve continuar sendo:
+   `Documentos Partilhados / ESTOQUE TI / Estoque TI.xlsx`
+3. Substitua o `src/App.jsx` no projeto pelo deste pacote.
+4. Faça novo deploy no Vercel.
 
-- Tabela: `Itens`
-- Tabela: `Movimentacoes`
-
-No Excel: clique dentro da tabela > Design da Tabela > Nome da Tabela.
-
-## Permissões Azure
-
-Manter permissões delegadas do Microsoft Graph:
-
-- `Files.ReadWrite.All`
-- `Sites.ReadWrite.All`
-- `User.Read`
-
-Com admin consent concedido.
-
-## Redirect URI
-
-Cadastrar em Authentication > Single-page application:
-
-- `https://inventario-ti-ten.vercel.app/redirect.html`
-- `http://localhost:5173/redirect.html`
+Não renomeie as tabelas do Excel. O app procura exatamente por `Itens` e `Movimentacoes`.

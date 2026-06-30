@@ -254,131 +254,25 @@ export default function InventarioTI() {
     return `/drives/${driveId}/items/${itemId}/workbook`;
   }
 
-  function isGraphItemNotFound(error) {
-    const msg = String(error?.message || '');
-    return msg.includes('Graph 404') || msg.includes('ItemNotFound') || msg.includes('itemNotFound');
-  }
-
-  function tableNameForUrl(tableName) {
-    return encodeURIComponent(tableName);
-  }
-
-  async function ensureExcelTable(base, tableName) {
-    try {
-      const tables = await graphFetch(`${base}/tables`);
-      const found = (tables.value || []).find((t) => (t.name || '').toLowerCase() === tableName.toLowerCase());
-      if (!found) {
-        const existing = (tables.value || []).map((t) => t.name).filter(Boolean).join(', ') || 'nenhuma tabela encontrada';
-        throw new Error(`tabela "${tableName}" não encontrada na planilha. Tabelas encontradas: ${existing}. No Excel, precisa ser Inserir > Tabela, com o nome exato "${tableName}".`);
-      }
-      return found;
-    } catch (e) {
-      if (isGraphItemNotFound(e)) {
-        throw new Error(`não consegui listar as tabelas da planilha. Confirme se o arquivo é .xlsx válido e se está fechado no Excel Desktop.`);
-      }
-      throw e;
-    }
-  }
-
-  async function listTableRows(base, tableName) {
-    await ensureExcelTable(base, tableName);
-
-    const paths = [
-      `${base}/tables/${tableNameForUrl(tableName)}/rows`,
-      `${base}/tables('${tableName.replaceAll("'", "''")}')/rows`,
-    ];
-
-    const errors = [];
-    for (const path of paths) {
-      try {
-        return await graphFetch(path);
-      } catch (e) {
-        errors.push(e.message);
-        // Em tabela recém-criada somente com cabeçalho, o Graph pode responder 404 para /rows.
-        // Nesse caso a tabela existe, só ainda não há linhas de dados.
-        if (isGraphItemNotFound(e)) return { value: [] };
-      }
-    }
-
-    throw new Error(`não consegui ler as linhas da tabela ${tableName}: ${errors.join(' | ')}`);
-  }
-
-  async function addTableRow(base, tableName, rowValues) {
-    await ensureExcelTable(base, tableName);
-    const paths = [
-      `${base}/tables/${tableNameForUrl(tableName)}/rows/add`,
-      `${base}/tables('${tableName.replaceAll("'", "''")}')/rows/add`,
-      `${base}/tables/${tableNameForUrl(tableName)}/rows`,
-      `${base}/tables('${tableName.replaceAll("'", "''")}')/rows`,
-    ];
-
-    const errors = [];
-    for (const path of paths) {
-      try {
-        return await graphFetch(path, {
-          method: 'POST',
-          body: JSON.stringify({ values: [rowValues] }),
-        });
-      } catch (e) {
-        errors.push(e.message);
-      }
-    }
-
-    throw new Error(`não consegui inserir linha na tabela ${tableName}: ${errors.join(' | ')}`);
-  }
-
-  async function patchTableRow(base, tableName, rowIndex, rowValues) {
-    await ensureExcelTable(base, tableName);
-    const paths = [
-      `${base}/tables/${tableNameForUrl(tableName)}/rows/itemAt(index=${rowIndex})`,
-      `${base}/tables('${tableName.replaceAll("'", "''")}')/rows/itemAt(index=${rowIndex})`,
-    ];
-
-    const errors = [];
-    for (const path of paths) {
-      try {
-        return await graphFetch(path, {
-          method: 'PATCH',
-          body: JSON.stringify({ values: [rowValues] }),
-        });
-      } catch (e) {
-        errors.push(e.message);
-      }
-    }
-
-    throw new Error(`não consegui atualizar a linha ${rowIndex} da tabela ${tableName}: ${errors.join(' | ')}`);
-  }
-
-  async function removeTableRow(base, tableName, rowIndex) {
-    await ensureExcelTable(base, tableName);
-    const paths = [
-      `${base}/tables/${tableNameForUrl(tableName)}/rows/itemAt(index=${rowIndex})`,
-      `${base}/tables('${tableName.replaceAll("'", "''")}')/rows/itemAt(index=${rowIndex})`,
-    ];
-
-    const errors = [];
-    for (const path of paths) {
-      try {
-        return await graphFetch(path, { method: 'DELETE' });
-      } catch (e) {
-        errors.push(e.message);
-      }
-    }
-
-    throw new Error(`não consegui remover a linha ${rowIndex} da tabela ${tableName}: ${errors.join(' | ')}`);
-  }
-
   async function loadAllData() {
     setLoading(true);
     try {
       const { driveId, itemId } = await ensureGraphContext();
       const base = workbookBase(driveId, itemId);
       const [itemsRes, movsRes] = await Promise.all([
-        listTableRows(base, 'Itens'),
-        listTableRows(base, 'Movimentacoes'),
+        graphFetch(`${base}/tables('Itens')/rows`),
+        graphFetch(`${base}/tables('Movimentacoes')/rows`),
       ]);
-      setItems((itemsRes.value || []).map((r) => rowToItem(r.values[0])).reverse());
-      setMovements((movsRes.value || []).map((r) => rowToMov(r.values[0])).reverse());
+      const itemRows = (itemsRes.value || []).filter((r) => {
+        const id = r?.values?.[0]?.[0];
+        return id && !String(id).startsWith('__MODELO__');
+      });
+      const movRows = (movsRes.value || []).filter((r) => {
+        const id = r?.values?.[0]?.[0];
+        return id && !String(id).startsWith('__MODELO__');
+      });
+      setItems(itemRows.map((r) => rowToItem(r.values[0])).reverse());
+      setMovements(movRows.map((r) => rowToMov(r.values[0])).reverse());
     } catch (e) {
       showToast('Erro ao carregar planilha: ' + e.message);
     } finally {
@@ -392,14 +286,15 @@ export default function InventarioTI() {
 
   async function addRow(tableName, rowValues) {
     const { driveId, itemId } = await ensureGraphContext();
-    const base = workbookBase(driveId, itemId);
-    await addTableRow(base, tableName, rowValues);
+    await graphFetch(`${workbookBase(driveId, itemId)}/tables('${tableName}')/rows`, {
+      method: 'POST',
+      body: JSON.stringify({ values: [rowValues] }),
+    });
   }
 
   async function findRowIndex(tableName, idValue) {
     const { driveId, itemId } = await ensureGraphContext();
-    const base = workbookBase(driveId, itemId);
-    const res = await listTableRows(base, tableName);
+    const res = await graphFetch(`${workbookBase(driveId, itemId)}/tables('${tableName}')/rows`);
     return (res.value || []).findIndex((r) => r.values[0][0] === idValue);
   }
 
@@ -407,16 +302,17 @@ export default function InventarioTI() {
     const idx = await findRowIndex(tableName, idValue);
     if (idx === -1) throw new Error('linha não encontrada');
     const { driveId, itemId } = await ensureGraphContext();
-    const base = workbookBase(driveId, itemId);
-    await patchTableRow(base, tableName, idx, rowValues);
+    await graphFetch(`${workbookBase(driveId, itemId)}/tables('${tableName}')/rows/itemAt(index=${idx})`, {
+      method: 'PATCH',
+      body: JSON.stringify({ values: [rowValues] }),
+    });
   }
 
   async function deleteRowById(tableName, idValue) {
     const idx = await findRowIndex(tableName, idValue);
     if (idx === -1) return;
     const { driveId, itemId } = await ensureGraphContext();
-    const base = workbookBase(driveId, itemId);
-    await removeTableRow(base, tableName, idx);
+    await graphFetch(`${workbookBase(driveId, itemId)}/tables('${tableName}')/rows/itemAt(index=${idx})`, { method: 'DELETE' });
   }
 
   function openNewModal() {
