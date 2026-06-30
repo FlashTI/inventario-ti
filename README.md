@@ -1,6 +1,6 @@
-# Arquivos corrigidos — MSAL v5 + Graph 403 EditModeAccessDenied
+# Arquivos corrigidos — SharePoint link direto + MSAL v5 + Graph
 
-Este pacote mantém a correção do login com `redirect.html` e ajusta as permissões do Microsoft Graph para tentativa de edição da planilha no SharePoint.
+Este pacote mantém a correção do login com `redirect.html`, mantém os escopos de escrita do Microsoft Graph e altera a localização da planilha para usar o link real do SharePoint informado.
 
 ## Arquivos no pacote
 
@@ -9,33 +9,44 @@ Este pacote mantém a correção do login com `redirect.html` e ajusta as permis
 - `vite.config.js`
 - `README.md`
 
-## Alteração principal
+## Link da planilha usado no código
 
-No arquivo `src/App.jsx`, os escopos foram alterados de:
-
-```js
-const GRAPH_SCOPES = ['Files.ReadWrite', 'Sites.Read.All', 'User.Read'];
-```
-
-para:
+No `src/App.jsx`, foi adicionado:
 
 ```js
-const GRAPH_SCOPES = [
-  'Files.ReadWrite.All',
-  'Sites.ReadWrite.All',
-  'User.Read',
-];
+const EXCEL_FILE_WEB_URL = 'https://flashcouriercombr.sharepoint.com/:x:/r/sites/Suporte_Tcnico/Documentos%20Partilhados/ESTOQUE%20TI/Estoque%20TI.xlsx?d=w8665de340bf445ac826b93bcaae1bb16&csf=1&web=1&e=FONu2c';
 ```
 
-## O que configurar no Azure / Microsoft Entra ID
-
-No App Registration `37ff5e3e-1558-4add-b4e9-8e5c97e21943`, vá em:
+Antes o app tentava localizar a planilha por site/path:
 
 ```txt
-API permissions → Add a permission → Microsoft Graph → Delegated permissions
+/sites/Suporte_Tcnico
+/ESTOQUE TI/Estoque TI.xlsx
 ```
 
-Adicione:
+Agora ele resolve o arquivo pelo próprio link compartilhado usando:
+
+```txt
+/shares/{shareId}/driveItem
+```
+
+Depois usa o `driveId` e `itemId` retornados para acessar o workbook:
+
+```txt
+/drives/{driveId}/items/{itemId}/workbook
+```
+
+Isso evita erro por diferença de biblioteca/caminho, como `Documentos Partilhados`, `Shared Documents` ou biblioteca padrão do site.
+
+## Permissões necessárias no Azure / Microsoft Entra ID
+
+No App Registration `37ff5e3e-1558-4add-b4e9-8e5c97e21943`, mantenha em:
+
+```txt
+API permissions → Microsoft Graph → Delegated permissions
+```
+
+As permissões:
 
 ```txt
 Files.ReadWrite.All
@@ -49,8 +60,6 @@ Depois clique em:
 Grant admin consent
 ```
 
-Se você não for administrador do tenant, um administrador precisa aprovar essas permissões.
-
 ## Redirect URI
 
 Mantenha estes Redirect URIs cadastrados em **Authentication → Single-page application**:
@@ -60,12 +69,20 @@ https://inventario-ti-ten.vercel.app/redirect.html
 http://localhost:5173/redirect.html
 ```
 
-## Permissão real no SharePoint
+## Importante sobre o erro 403
 
-Mesmo com os escopos corretos, o usuário logado precisa ter permissão de edição no arquivo:
+Mesmo com o link correto e os escopos corretos, o usuário logado precisa conseguir editar a planilha manualmente no SharePoint/Excel Online.
+
+Teste com o mesmo usuário que faz login no app:
+
+1. Abra a planilha pelo link.
+2. Tente editar uma célula qualquer.
+3. Salve.
+
+Se abrir somente leitura ou pedir para solicitar acesso ao proprietário, o Graph continuará retornando:
 
 ```txt
-/ESTOQUE TI/Estoque TI.xlsx
+EditModeAccessDenied
 ```
 
-Se o usuário abrir a planilha manualmente e ela estiver como somente leitura, o Graph continuará retornando erro 403.
+Nesse caso, o dono da planilha/site precisa dar permissão de **edição** para esse usuário ou grupo.

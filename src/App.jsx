@@ -22,9 +22,7 @@ const ACCENT_DARK = '#042C53';
 
 const CLIENT_ID = '37ff5e3e-1558-4add-b4e9-8e5c97e21943';
 const TENANT_ID = '9cc5e35a-c64c-4450-ae6d-9bf065f73c61';
-const SITE_HOSTNAME = 'flashcouriercombr.sharepoint.com';
-const SITE_PATH = '/sites/Suporte_Tcnico';
-const FILE_PATH = '/ESTOQUE TI/Estoque TI.xlsx';
+const EXCEL_FILE_WEB_URL = 'https://flashcouriercombr.sharepoint.com/:x:/r/sites/Suporte_Tcnico/Documentos%20Partilhados/ESTOQUE%20TI/Estoque%20TI.xlsx?d=w8665de340bf445ac826b93bcaae1bb16&csf=1&web=1&e=FONu2c';
 const GRAPH_SCOPES = [
   'Files.ReadWrite.All',
   'Sites.ReadWrite.All',
@@ -75,7 +73,7 @@ export default function InventarioTI() {
   const [account, setAccount] = useState(null);
   const [authError, setAuthError] = useState('');
   const [connecting, setConnecting] = useState(false);
-  const graphCtx = useRef({ siteId: null, itemId: null });
+  const graphCtx = useRef({ driveId: null, itemId: null });
 
   const [items, setItems] = useState([]);
   const [movements, setMovements] = useState([]);
@@ -169,28 +167,41 @@ export default function InventarioTI() {
     setAccount(null);
     setItems([]);
     setMovements([]);
-    graphCtx.current = { siteId: null, itemId: null };
+    graphCtx.current = { driveId: null, itemId: null };
+  }
+
+  function toGraphSharingId(webUrl) {
+    const bytes = new TextEncoder().encode(webUrl);
+    let binary = '';
+    bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+    return `u!${btoa(binary).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')}`;
   }
 
   const ensureGraphContext = useCallback(async () => {
-    if (graphCtx.current.siteId && graphCtx.current.itemId) return graphCtx.current;
-    const site = await graphFetch(`/sites/${SITE_HOSTNAME}:${SITE_PATH}`);
-    const siteId = site.id;
-    const encodedPath = FILE_PATH.split('/').map(encodeURIComponent).join('/');
-    const drive = await graphFetch(`/sites/${siteId}/drive/root:${encodedPath}`);
-    graphCtx.current = { siteId, itemId: drive.id };
+    if (graphCtx.current.driveId && graphCtx.current.itemId) return graphCtx.current;
+
+    const shareId = toGraphSharingId(EXCEL_FILE_WEB_URL);
+    const driveItem = await graphFetch(`/shares/${shareId}/driveItem`);
+    const driveId = driveItem?.parentReference?.driveId;
+    const itemId = driveItem?.id;
+
+    if (!driveId || !itemId) {
+      throw new Error('não foi possível localizar o arquivo pelo link do SharePoint');
+    }
+
+    graphCtx.current = { driveId, itemId };
     return graphCtx.current;
   }, [account]);
 
-  function workbookBase(siteId, itemId) {
-    return `/sites/${siteId}/drive/items/${itemId}/workbook`;
+  function workbookBase(driveId, itemId) {
+    return `/drives/${driveId}/items/${itemId}/workbook`;
   }
 
   async function loadAllData() {
     setLoading(true);
     try {
-      const { siteId, itemId } = await ensureGraphContext();
-      const base = workbookBase(siteId, itemId);
+      const { driveId, itemId } = await ensureGraphContext();
+      const base = workbookBase(driveId, itemId);
       const [itemsRes, movsRes] = await Promise.all([
         graphFetch(`${base}/tables('Itens')/rows`),
         graphFetch(`${base}/tables('Movimentacoes')/rows`),
@@ -209,24 +220,24 @@ export default function InventarioTI() {
   }, [account]);
 
   async function addRow(tableName, rowValues) {
-    const { siteId, itemId } = await ensureGraphContext();
-    await graphFetch(`${workbookBase(siteId, itemId)}/tables('${tableName}')/rows`, {
+    const { driveId, itemId } = await ensureGraphContext();
+    await graphFetch(`${workbookBase(driveId, itemId)}/tables('${tableName}')/rows`, {
       method: 'POST',
       body: JSON.stringify({ values: [rowValues] }),
     });
   }
 
   async function findRowIndex(tableName, idValue) {
-    const { siteId, itemId } = await ensureGraphContext();
-    const res = await graphFetch(`${workbookBase(siteId, itemId)}/tables('${tableName}')/rows`);
+    const { driveId, itemId } = await ensureGraphContext();
+    const res = await graphFetch(`${workbookBase(driveId, itemId)}/tables('${tableName}')/rows`);
     return (res.value || []).findIndex((r) => r.values[0][0] === idValue);
   }
 
   async function updateRowById(tableName, idValue, rowValues) {
     const idx = await findRowIndex(tableName, idValue);
     if (idx === -1) throw new Error('linha não encontrada');
-    const { siteId, itemId } = await ensureGraphContext();
-    await graphFetch(`${workbookBase(siteId, itemId)}/tables('${tableName}')/rows/itemAt(index=${idx})`, {
+    const { driveId, itemId } = await ensureGraphContext();
+    await graphFetch(`${workbookBase(driveId, itemId)}/tables('${tableName}')/rows/itemAt(index=${idx})`, {
       method: 'PATCH',
       body: JSON.stringify({ values: [rowValues] }),
     });
@@ -235,8 +246,8 @@ export default function InventarioTI() {
   async function deleteRowById(tableName, idValue) {
     const idx = await findRowIndex(tableName, idValue);
     if (idx === -1) return;
-    const { siteId, itemId } = await ensureGraphContext();
-    await graphFetch(`${workbookBase(siteId, itemId)}/tables('${tableName}')/rows/itemAt(index=${idx})`, { method: 'DELETE' });
+    const { driveId, itemId } = await ensureGraphContext();
+    await graphFetch(`${workbookBase(driveId, itemId)}/tables('${tableName}')/rows/itemAt(index=${idx})`, { method: 'DELETE' });
   }
 
   function openNewModal() {
