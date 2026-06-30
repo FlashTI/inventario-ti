@@ -1,51 +1,71 @@
-# Inventário TI — Flash Courier
+# Arquivos corrigidos — MSAL v5 + Graph 403 EditModeAccessDenied
 
-App standalone (React + Vite) para controle de inventário da sala de TI, conectado à planilha "Estoque TI.xlsx" no SharePoint via Microsoft Graph.
+Este pacote mantém a correção do login com `redirect.html` e ajusta as permissões do Microsoft Graph para tentativa de edição da planilha no SharePoint.
 
-## Correção MSAL v5
+## Arquivos no pacote
 
-Este projeto usa `@azure/msal-browser` v5. Por isso, o retorno de autenticação deve usar uma página dedicada com `redirect-bridge`, e não uma página totalmente em branco.
+- `src/App.jsx`
+- `redirect.html`
+- `vite.config.js`
+- `README.md`
 
-Arquivos importantes:
+## Alteração principal
 
-- `redirect.html` — página dedicada de retorno do login Microsoft.
-- `vite.config.js` — inclui `redirect.html` como segunda entrada no build do Vite.
-- `src/App.jsx` — usa `https://SEU-DOMINIO/redirect.html` como `redirectUri`.
+No arquivo `src/App.jsx`, os escopos foram alterados de:
 
-Se existir `public/blank.html` de uma tentativa anterior, pode excluir esse arquivo.
+```js
+const GRAPH_SCOPES = ['Files.ReadWrite', 'Sites.Read.All', 'User.Read'];
+```
 
-## Passo obrigatório no Azure / Microsoft Entra ID
+para:
 
-No portal Microsoft Entra ID:
+```js
+const GRAPH_SCOPES = [
+  'Files.ReadWrite.All',
+  'Sites.ReadWrite.All',
+  'User.Read',
+];
+```
 
-1. Vá em **App registrations**.
-2. Abra o app com Client ID `37ff5e3e-1558-4add-b4e9-8e5c97e21943`.
-3. Vá em **Authentication**.
-4. Em **Single-page application**, cadastre exatamente:
+## O que configurar no Azure / Microsoft Entra ID
+
+No App Registration `37ff5e3e-1558-4add-b4e9-8e5c97e21943`, vá em:
+
+```txt
+API permissions → Add a permission → Microsoft Graph → Delegated permissions
+```
+
+Adicione:
+
+```txt
+Files.ReadWrite.All
+Sites.ReadWrite.All
+User.Read
+```
+
+Depois clique em:
+
+```txt
+Grant admin consent
+```
+
+Se você não for administrador do tenant, um administrador precisa aprovar essas permissões.
+
+## Redirect URI
+
+Mantenha estes Redirect URIs cadastrados em **Authentication → Single-page application**:
 
 ```txt
 https://inventario-ti-ten.vercel.app/redirect.html
-```
-
-Para teste local, cadastre também:
-
-```txt
 http://localhost:5173/redirect.html
 ```
 
-Depois salve e faça um novo deploy no Vercel.
+## Permissão real no SharePoint
 
-## Rodando localmente
-
-```bash
-npm install
-npm run dev
-```
-
-A aplicação abre em:
+Mesmo com os escopos corretos, o usuário logado precisa ter permissão de edição no arquivo:
 
 ```txt
-http://localhost:5173
+/ESTOQUE TI/Estoque TI.xlsx
 ```
 
-A página `redirect.html` só é usada pelo fluxo de autenticação. Se você abrir `/redirect.html` manualmente, verá apenas uma página simples de processamento.
+Se o usuário abrir a planilha manualmente e ela estiver como somente leitura, o Graph continuará retornando erro 403.

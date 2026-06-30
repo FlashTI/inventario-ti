@@ -25,7 +25,11 @@ const TENANT_ID = '9cc5e35a-c64c-4450-ae6d-9bf065f73c61';
 const SITE_HOSTNAME = 'flashcouriercombr.sharepoint.com';
 const SITE_PATH = '/sites/Suporte_Tcnico';
 const FILE_PATH = '/ESTOQUE TI/Estoque TI.xlsx';
-const GRAPH_SCOPES = ['Files.ReadWrite', 'Sites.Read.All', 'User.Read'];
+const GRAPH_SCOPES = [
+  'Files.ReadWrite.All',
+  'Sites.ReadWrite.All',
+  'User.Read',
+];
 const AUTH_REDIRECT_URI = `${window.location.origin}/redirect.html`;
 
 const msalConfig = {
