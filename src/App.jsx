@@ -23,6 +23,9 @@ const ACCENT_DARK = '#042C53';
 const CLIENT_ID = '37ff5e3e-1558-4add-b4e9-8e5c97e21943';
 const TENANT_ID = '9cc5e35a-c64c-4450-ae6d-9bf065f73c61';
 const EXCEL_FILE_WEB_URL = 'https://flashcouriercombr.sharepoint.com/:x:/r/sites/Suporte_Tcnico/Documentos%20Partilhados/ESTOQUE%20TI/Estoque%20TI.xlsx?d=w8665de340bf445ac826b93bcaae1bb16&csf=1&web=1&e=FONu2c';
+const SHAREPOINT_HOSTNAME = 'flashcouriercombr.sharepoint.com';
+const SHAREPOINT_SITE_PATH = '/sites/Suporte_Tcnico';
+const EXCEL_FILE_PATH = 'ESTOQUE TI/Estoque TI.xlsx';
 const GRAPH_SCOPES = [
   'Files.ReadWrite.All',
   'Sites.ReadWrite.All',
@@ -170,27 +173,81 @@ export default function InventarioTI() {
     graphCtx.current = { driveId: null, itemId: null };
   }
 
-  function toGraphSharingId(webUrl) {
-    const bytes = new TextEncoder().encode(webUrl);
-    let binary = '';
-    bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
-    return `u!${btoa(binary).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')}`;
+  function encodeGraphPath(path) {
+    return path
+      .split('/')
+      .filter(Boolean)
+      .map((part) => encodeURIComponent(part))
+      .join('/');
+  }
+
+  async function tryGraphResolve(label, path, errors) {
+    try {
+      const item = await graphFetch(path);
+      if (item?.id) return item;
+      errors.push(`${label}: retorno sem id`);
+      return null;
+    } catch (e) {
+      errors.push(`${label}: ${e.message}`);
+      return null;
+    }
   }
 
   const ensureGraphContext = useCallback(async () => {
     if (graphCtx.current.driveId && graphCtx.current.itemId) return graphCtx.current;
 
-    const shareId = toGraphSharingId(EXCEL_FILE_WEB_URL);
-    const driveItem = await graphFetch(`/shares/${shareId}/driveItem`);
-    const driveId = driveItem?.parentReference?.driveId;
-    const itemId = driveItem?.id;
+    const errors = [];
+    const encodedFilePath = encodeGraphPath(EXCEL_FILE_PATH);
+    const fallbackPaths = [
+      encodedFilePath,
+      encodeGraphPath(`Documentos Partilhados/${EXCEL_FILE_PATH}`),
+      encodeGraphPath(`Shared Documents/${EXCEL_FILE_PATH}`),
+      encodeGraphPath(`Documents/${EXCEL_FILE_PATH}`),
+    ];
 
-    if (!driveId || !itemId) {
-      throw new Error('não foi possível localizar o arquivo pelo link do SharePoint');
+    const site = await graphFetch(`/sites/${SHAREPOINT_HOSTNAME}:${SHAREPOINT_SITE_PATH}`);
+    if (!site?.id) throw new Error('não foi possível localizar o site do SharePoint');
+
+    // 1) Tenta primeiro pela biblioteca padrão do site.
+    for (const filePath of fallbackPaths) {
+      const item = await tryGraphResolve(
+        `drive padrão: ${decodeURIComponent(filePath)}`,
+        `/sites/${site.id}/drive/root:/${filePath}`,
+        errors,
+      );
+      if (item?.id) {
+        graphCtx.current = {
+          driveId: item.parentReference?.driveId,
+          itemId: item.id,
+        };
+        if (graphCtx.current.driveId && graphCtx.current.itemId) return graphCtx.current;
+      }
     }
 
-    graphCtx.current = { driveId, itemId };
-    return graphCtx.current;
+    // 2) Se a biblioteca padrão não for a correta, percorre todas as bibliotecas/document libraries do site.
+    const drivesRes = await graphFetch(`/sites/${site.id}/drives`);
+    const drives = drivesRes?.value || [];
+
+    for (const drive of drives) {
+      for (const filePath of fallbackPaths) {
+        const item = await tryGraphResolve(
+          `${drive.name || drive.id}: ${decodeURIComponent(filePath)}`,
+          `/drives/${drive.id}/root:/${filePath}`,
+          errors,
+        );
+        if (item?.id) {
+          graphCtx.current = {
+            driveId: item.parentReference?.driveId || drive.id,
+            itemId: item.id,
+          };
+          return graphCtx.current;
+        }
+      }
+    }
+
+    throw new Error(
+      `arquivo não encontrado no SharePoint. Site: ${SHAREPOINT_HOSTNAME}${SHAREPOINT_SITE_PATH}. Caminho esperado: ${EXCEL_FILE_PATH}. Tentativas: ${errors.slice(0, 6).join(' | ')}`,
+    );
   }, [account]);
 
   function workbookBase(driveId, itemId) {

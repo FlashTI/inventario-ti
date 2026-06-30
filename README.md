@@ -1,6 +1,50 @@
-# Arquivos corrigidos — SharePoint link direto + MSAL v5 + Graph
+# Correção — Graph 404 ItemNotFound no SharePoint
 
-Este pacote mantém a correção do login com `redirect.html`, mantém os escopos de escrita do Microsoft Graph e altera a localização da planilha para usar o link real do SharePoint informado.
+Este pacote remove a dependência do endpoint `/shares/{shareId}/driveItem`, que retornou:
+
+```txt
+Graph 404: ItemNotFound
+```
+
+Agora o app resolve a planilha pelo caminho real do SharePoint:
+
+```txt
+Host: flashcouriercombr.sharepoint.com
+Site: /sites/Suporte_Tcnico
+Arquivo: ESTOQUE TI/Estoque TI.xlsx
+```
+
+A lógica nova faz:
+
+1. Localiza o site:
+
+```txt
+/sites/flashcouriercombr.sharepoint.com:/sites/Suporte_Tcnico
+```
+
+2. Tenta encontrar o arquivo na biblioteca padrão:
+
+```txt
+/sites/{siteId}/drive/root:/ESTOQUE%20TI/Estoque%20TI.xlsx
+```
+
+3. Se não achar, lista todas as bibliotecas do site:
+
+```txt
+/sites/{siteId}/drives
+```
+
+4. Tenta localizar o arquivo em cada biblioteca:
+
+```txt
+/drives/{driveId}/root:/ESTOQUE%20TI/Estoque%20TI.xlsx
+```
+
+5. Depois usa o `driveId` e `itemId` encontrados para acessar o workbook:
+
+```txt
+/drives/{driveId}/items/{itemId}/workbook
+```
 
 ## Arquivos no pacote
 
@@ -9,44 +53,9 @@ Este pacote mantém a correção do login com `redirect.html`, mantém os escopo
 - `vite.config.js`
 - `README.md`
 
-## Link da planilha usado no código
-
-No `src/App.jsx`, foi adicionado:
-
-```js
-const EXCEL_FILE_WEB_URL = 'https://flashcouriercombr.sharepoint.com/:x:/r/sites/Suporte_Tcnico/Documentos%20Partilhados/ESTOQUE%20TI/Estoque%20TI.xlsx?d=w8665de340bf445ac826b93bcaae1bb16&csf=1&web=1&e=FONu2c';
-```
-
-Antes o app tentava localizar a planilha por site/path:
-
-```txt
-/sites/Suporte_Tcnico
-/ESTOQUE TI/Estoque TI.xlsx
-```
-
-Agora ele resolve o arquivo pelo próprio link compartilhado usando:
-
-```txt
-/shares/{shareId}/driveItem
-```
-
-Depois usa o `driveId` e `itemId` retornados para acessar o workbook:
-
-```txt
-/drives/{driveId}/items/{itemId}/workbook
-```
-
-Isso evita erro por diferença de biblioteca/caminho, como `Documentos Partilhados`, `Shared Documents` ou biblioteca padrão do site.
-
 ## Permissões necessárias no Azure / Microsoft Entra ID
 
-No App Registration `37ff5e3e-1558-4add-b4e9-8e5c97e21943`, mantenha em:
-
-```txt
-API permissions → Microsoft Graph → Delegated permissions
-```
-
-As permissões:
+No App Registration `37ff5e3e-1558-4add-b4e9-8e5c97e21943`, mantenha as permissões delegadas:
 
 ```txt
 Files.ReadWrite.All
@@ -62,27 +71,19 @@ Grant admin consent
 
 ## Redirect URI
 
-Mantenha estes Redirect URIs cadastrados em **Authentication → Single-page application**:
+Mantenha estes Redirect URIs em **Authentication → Single-page application**:
 
 ```txt
 https://inventario-ti-ten.vercel.app/redirect.html
 http://localhost:5173/redirect.html
 ```
 
-## Importante sobre o erro 403
+## Atenção
 
-Mesmo com o link correto e os escopos corretos, o usuário logado precisa conseguir editar a planilha manualmente no SharePoint/Excel Online.
+Se depois desta correção voltar o erro `Graph 403 EditModeAccessDenied`, o caminho foi encontrado, mas o usuário logado não possui permissão de edição na planilha.
 
-Teste com o mesmo usuário que faz login no app:
-
-1. Abra a planilha pelo link.
-2. Tente editar uma célula qualquer.
-3. Salve.
-
-Se abrir somente leitura ou pedir para solicitar acesso ao proprietário, o Graph continuará retornando:
+O usuário precisa conseguir abrir e editar manualmente:
 
 ```txt
-EditModeAccessDenied
+https://flashcouriercombr.sharepoint.com/:x:/r/sites/Suporte_Tcnico/Documentos%20Partilhados/ESTOQUE%20TI/Estoque%20TI.xlsx
 ```
-
-Nesse caso, o dono da planilha/site precisa dar permissão de **edição** para esse usuário ou grupo.
