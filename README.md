@@ -1,25 +1,37 @@
-# Correção da planilha do Inventário TI
+# Ajuste — movimentação por quantidade
 
-Este pacote corrige o erro:
+Arquivos alterados para o app de Inventário TI.
 
-`tabela "Movimentacoes" não encontrada na planilha. Tabelas encontradas: ListasApp.`
+## O que mudou
 
-## O que foi ajustado
+- A tela **Movimentar** agora tem o campo **Quantidade a movimentar**.
+- O sistema valida se a quantidade informada é maior que a quantidade disponível no registro.
+- Se a quantidade movimentada for igual ao total, o comportamento continua parecido com o antigo: o próprio item é atualizado.
+- Se a quantidade movimentada for menor que o total, o sistema divide o registro:
+  - mantém o item original com o saldo restante;
+  - cria um novo item com a quantidade movimentada, novo status e responsável;
+  - registra a movimentação no histórico.
+- A quantidade movimentada é gravada na observação da tabela `Movimentacoes`, sem exigir alteração na estrutura da planilha.
 
-- `Estoque TI.xlsx` foi recriada com tabelas reais do Excel:
-  - `Itens`
-  - `Movimentacoes`
-  - `ListasApp`
-- As tabelas `Itens` e `Movimentacoes` têm uma linha técnica com ID `__MODELO__` para o Microsoft Graph reconhecer a tabela como ativa.
-- `src/App.jsx` foi ajustado para ignorar linhas com ID `__MODELO__`.
+## Arquivos
 
-## Como usar
+Copie estes arquivos por cima do projeto atual:
 
-1. Substitua no SharePoint o arquivo atual por este arquivo:
-   `Estoque TI.xlsx`
-2. O caminho deve continuar sendo:
-   `Documentos Partilhados / ESTOQUE TI / Estoque TI.xlsx`
-3. Substitua o `src/App.jsx` no projeto pelo deste pacote.
-4. Faça novo deploy no Vercel.
+```txt
+src/App.jsx
+redirect.html
+vite.config.js
+README.md
+```
 
-Não renomeie as tabelas do Excel. O app procura exatamente por `Itens` e `Movimentacoes`.
+Depois faça novo deploy no Vercel.
+
+## Observação
+
+A planilha existente pode continuar a mesma, desde que já tenha as tabelas reais do Excel:
+
+```txt
+Itens
+Movimentacoes
+ListasApp
+```

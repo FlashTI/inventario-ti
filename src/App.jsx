@@ -56,6 +56,20 @@ function fmtDateTime(d) {
   if (!d) return '—';
   try { return new Date(d).toLocaleString('pt-BR'); } catch { return d; }
 }
+function toPositiveInt(value, fallback = 1) {
+  const n = parseInt(value, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+function getItemQuantity(item) {
+  return toPositiveInt(item?.quantidade, 1);
+}
+function shouldClearResponsavelByAction(action) {
+  return ['Devolução', 'Retorno de manutenção'].includes(action);
+}
+function buildMovementObs(qtd, obs) {
+  const cleanObs = (obs || '').trim();
+  return `Qtd. movimentada: ${qtd}${cleanObs ? ` | ${cleanObs}` : ''}`;
+}
 function rowToItem(values) {
   const [ID, Nome, Categoria, Quantidade, Patrimonio, Status, Responsavel, Localizacao, DataEntrada, Observacoes, CreatedAt] = values;
   return { id: ID, nome: Nome, categoria: Categoria, quantidade: Quantidade || 1, patrimonio: Patrimonio, status: Status, responsavel: Responsavel, localizacao: Localizacao, dataEntrada: DataEntrada, obs: Observacoes, createdAt: CreatedAt };
@@ -364,23 +378,74 @@ export default function InventarioTI() {
   }
 
   function openMoveModal(item) {
-    setMoveItem({ itemId: item.id, itemName: item.nome, action: 'Devolução', responsavel: item.responsavel || '', obs: '', newStatus: 'Disponível' });
+    const qtdAtual = getItemQuantity(item);
+    setMoveItem({
+      itemId: item.id,
+      itemName: item.nome,
+      action: 'Retirada',
+      responsavel: item.responsavel || '',
+      obs: '',
+      newStatus: item.status || 'Disponível',
+      quantidade: 1,
+      quantidadeDisponivel: qtdAtual,
+    });
     setMoveModalOpen(true);
   }
 
   async function saveMovement(e) {
     e.preventDefault();
+    const target = items.find((it) => it.id === moveItem.itemId);
+    if (!target) { showToast('Item não encontrado para movimentação.'); return; }
+
+    const qtdAtual = getItemQuantity(target);
+    const qtdMovimentada = toPositiveInt(moveItem.quantidade, 1);
+
+    if (qtdMovimentada > qtdAtual) {
+      showToast(`Quantidade inválida. Esse registro possui apenas ${qtdAtual} unidade(s).`);
+      return;
+    }
+
     setSyncing(true);
     try {
-      const mv = { id: uid(), itemId: moveItem.itemId, itemName: moveItem.itemName, action: moveItem.action, responsavel: moveItem.responsavel || '—', registradoPor: account.name || account.username, date: new Date().toISOString(), obs: moveItem.obs };
+      const responsavelFinal = shouldClearResponsavelByAction(moveItem.action) ? '' : (moveItem.responsavel || '');
+      const mv = {
+        id: uid(),
+        itemId: moveItem.itemId,
+        itemName: moveItem.itemName,
+        action: moveItem.action,
+        responsavel: responsavelFinal || '—',
+        registradoPor: account.name || account.username,
+        date: new Date().toISOString(),
+        obs: buildMovementObs(qtdMovimentada, moveItem.obs),
+      };
+
       await addRow('Movimentacoes', movToRow(mv));
       setMovements((prev) => [mv, ...prev]);
-      const target = items.find((it) => it.id === moveItem.itemId);
-      if (target) {
-        const updated = { ...target, status: moveItem.newStatus, responsavel: moveItem.newStatus === 'Disponível' ? '' : moveItem.responsavel };
+
+      if (qtdMovimentada === qtdAtual) {
+        const updated = { ...target, status: moveItem.newStatus, responsavel: responsavelFinal };
         await updateRowById('Itens', updated.id, itemToRow(updated));
         setItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)));
+      } else {
+        const remainingItem = { ...target, quantidade: qtdAtual - qtdMovimentada };
+        const movedItem = {
+          ...target,
+          id: uid(),
+          quantidade: qtdMovimentada,
+          status: moveItem.newStatus,
+          responsavel: responsavelFinal,
+          createdAt: new Date().toISOString(),
+        };
+
+        await updateRowById('Itens', remainingItem.id, itemToRow(remainingItem));
+        await addRow('Itens', itemToRow(movedItem));
+
+        setItems((prev) => [
+          movedItem,
+          ...prev.map((it) => (it.id === remainingItem.id ? remainingItem : it)),
+        ]);
       }
+
       setMoveModalOpen(false); setMoveItem(null);
       showToast('Movimentação registrada.');
     } catch (e) { showToast('Erro: ' + e.message); }
@@ -531,7 +596,11 @@ export default function InventarioTI() {
         <Modal onClose={() => { setMoveModalOpen(false); setMoveItem(null); }} title={`Movimentar — ${moveItem.itemName}`}>
           <form onSubmit={saveMovement} className="space-y-3">
             <Field label="Ação"><select value={moveItem.action} onChange={(e) => setMoveItem({ ...moveItem, action: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm"><option>Retirada</option><option>Devolução</option><option>Envio para manutenção</option><option>Retorno de manutenção</option><option>Baixa</option></select></Field>
-            <Field label="Novo status"><select value={moveItem.newStatus} onChange={(e) => setMoveItem({ ...moveItem, newStatus: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm">{STATUS.map((s) => <option key={s}>{s}</option>)}</select></Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Quantidade a movimentar"><input type="number" min="1" max={moveItem.quantidadeDisponivel || 1} value={moveItem.quantidade ?? 1} onChange={(e) => setMoveItem({ ...moveItem, quantidade: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm" /></Field>
+              <Field label="Novo status"><select value={moveItem.newStatus} onChange={(e) => setMoveItem({ ...moveItem, newStatus: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm">{STATUS.map((s) => <option key={s}>{s}</option>)}</select></Field>
+            </div>
+            <p className="text-xs text-stone-400 -mt-1">Disponível neste registro: {moveItem.quantidadeDisponivel || 1}. Se movimentar uma quantidade menor, o sistema divide o item e mantém o saldo no registro original.</p>
             <Field label="Responsável"><input type="text" value={moveItem.responsavel} onChange={(e) => setMoveItem({ ...moveItem, responsavel: e.target.value })} placeholder="Quem está pegando/devolvendo" className="w-full px-3 py-2 rounded border border-stone-300 text-sm" /></Field>
             <Field label="Observação"><textarea value={moveItem.obs} onChange={(e) => setMoveItem({ ...moveItem, obs: e.target.value })} rows={2} className="w-full px-3 py-2 rounded border border-stone-300 text-sm" /></Field>
             <p className="text-xs text-stone-400">Registrado por: {account.name || account.username}</p>
