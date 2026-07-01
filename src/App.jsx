@@ -10,11 +10,44 @@ const CATEGORIAS = [
   'CPU', 'Coletor Honeywell',
 ];
 
-const STATUS = ['Disponível', 'Em manutenção', 'Baixado'];
+const STATUS = ['Disponível', 'Retirado para uso', 'Em manutenção', 'Baixado'];
 const STATUS_COLOR = {
   'Disponível': { bg: '#EAF3DE', text: '#27500A' },
+  'Retirado para uso': { bg: '#E8F0FE', text: '#123F73' },
   'Em manutenção': { bg: '#FAEEDA', text: '#633806' },
   'Baixado': { bg: '#FCEBEB', text: '#791F1F' },
+};
+
+const OPERATIONAL_TABS = {
+  disponiveis: {
+    title: 'Itens disponíveis',
+    shortTitle: 'Disponíveis',
+    status: 'Disponível',
+    actions: ['Retirada', 'Envio para manutenção', 'Item quebrado/danificado'],
+    empty: 'Nenhum item disponível no estoque.',
+  },
+  retirados: {
+    title: 'Retirados para uso',
+    shortTitle: 'Retirados',
+    status: 'Retirado para uso',
+    actions: ['Devolução', 'Item quebrado/danificado'],
+    empty: 'Nenhum item retirado para uso.',
+  },
+  manutencao: {
+    title: 'Em manutenção',
+    shortTitle: 'Manutenção',
+    status: 'Em manutenção',
+    actions: ['Retorno da manutenção', 'Item quebrado/danificado'],
+    empty: 'Nenhum item em manutenção.',
+  },
+};
+
+const ACTION_CONFIG = {
+  'Retirada': { targetStatus: 'Retirado para uso', clearResponsavel: false, requireResponsavel: true },
+  'Devolução': { targetStatus: 'Disponível', clearResponsavel: true },
+  'Envio para manutenção': { targetStatus: 'Em manutenção', clearResponsavel: false },
+  'Retorno da manutenção': { targetStatus: 'Disponível', clearResponsavel: true },
+  'Item quebrado/danificado': { targetStatus: null, clearResponsavel: true, removeFromStock: true },
 };
 
 const ACCENT = '#185FA5';
@@ -64,11 +97,19 @@ function getItemQuantity(item) {
   return toPositiveInt(item?.quantidade, 1);
 }
 function shouldClearResponsavelByAction(action) {
-  return ['Devolução', 'Retorno de manutenção'].includes(action);
+  return Boolean(ACTION_CONFIG[action]?.clearResponsavel);
 }
-function buildMovementObs(qtd, obs) {
+function buildMovementObs(qtd, obs, origem, destino) {
   const cleanObs = (obs || '').trim();
-  return `Qtd. movimentada: ${qtd}${cleanObs ? ` | ${cleanObs}` : ''}`;
+  const partes = [`Qtd. movimentada: ${qtd}`];
+  if (origem) partes.push(`Origem: ${origem}`);
+  if (destino) partes.push(`Destino: ${destino}`);
+  if (cleanObs) partes.push(cleanObs);
+  return partes.join(' | ');
+}
+function parseMovementQuantity(obs) {
+  const match = String(obs || '').match(/Qtd\. movimentada:\s*(\d+)/i);
+  return match ? match[1] : '—';
 }
 function rowToItem(values) {
   const [ID, Nome, Categoria, Quantidade, Patrimonio, Status, Responsavel, Localizacao, DataEntrada, Observacoes, CreatedAt] = values;
@@ -85,6 +126,51 @@ function movToRow(mv) {
   return [mv.id, mv.itemId, mv.itemName, mv.action, mv.responsavel || '—', mv.registradoPor, mv.date, mv.obs || ''];
 }
 
+function normalizeKey(value) {
+  return String(value || '').trim().toLowerCase();
+}
+function groupKeyForItem(it) {
+  const status = it.status || 'Disponível';
+  const responsavel = status === 'Disponível' ? '' : (it.responsavel || '');
+  return [
+    it.nome,
+    it.categoria,
+    it.patrimonio,
+    status,
+    responsavel,
+    it.localizacao,
+    it.obs,
+  ].map(normalizeKey).join('||');
+}
+function groupItemsByQuantity(rows) {
+  const map = new Map();
+  rows.forEach((it) => {
+    const key = groupKeyForItem(it);
+    const current = map.get(key);
+    if (!current) {
+      map.set(key, {
+        ...it,
+        id: `group_${key}`,
+        groupKey: key,
+        itemIds: [it.id],
+        quantidade: getItemQuantity(it),
+        sourceCount: 1,
+        responsavel: (it.status || 'Disponível') === 'Disponível' ? '' : (it.responsavel || ''),
+      });
+    } else {
+      current.itemIds.push(it.id);
+      current.quantidade += getItemQuantity(it);
+      current.sourceCount += 1;
+    }
+  });
+  return Array.from(map.values()).sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'));
+}
+function statusDestinoPorAcao(action) {
+  const cfg = ACTION_CONFIG[action];
+  if (!cfg) return '';
+  return cfg.removeFromStock ? 'Removido do estoque' : cfg.targetStatus;
+}
+
 export default function InventarioTI() {
   const [msalReady, setMsalReady] = useState(false);
   const [account, setAccount] = useState(null);
@@ -96,11 +182,10 @@ export default function InventarioTI() {
   const [movements, setMovements] = useState([]);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
-  const [tab, setTab] = useState('itens');
+  const [tab, setTab] = useState('disponiveis');
 
   const [search, setSearch] = useState('');
   const [filterCat, setFilterCat] = useState('Todas');
-  const [filterStatus, setFilterStatus] = useState('Todos');
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
@@ -377,15 +462,19 @@ export default function InventarioTI() {
     finally { setSyncing(false); }
   }
 
-  function openMoveModal(item) {
-    const qtdAtual = getItemQuantity(item);
+  function openMoveModal(itemGroup) {
+    const cfg = OPERATIONAL_TABS[tab] || OPERATIONAL_TABS.disponiveis;
+    const actions = cfg.actions;
+    const firstAction = actions[0];
+    const qtdAtual = getItemQuantity(itemGroup);
     setMoveItem({
-      itemId: item.id,
-      itemName: item.nome,
-      action: 'Retirada',
-      responsavel: item.responsavel || '',
+      sourceItemIds: itemGroup.itemIds || [itemGroup.id],
+      itemName: itemGroup.nome,
+      sourceStatus: cfg.status,
+      action: firstAction,
+      allowedActions: actions,
+      responsavel: firstAction === 'Retirada' ? '' : (itemGroup.responsavel || ''),
       obs: '',
-      newStatus: item.status || 'Disponível',
       quantidade: 1,
       quantidadeDisponivel: qtdAtual,
     });
@@ -394,81 +483,165 @@ export default function InventarioTI() {
 
   async function saveMovement(e) {
     e.preventDefault();
-    const target = items.find((it) => it.id === moveItem.itemId);
-    if (!target) { showToast('Item não encontrado para movimentação.'); return; }
+    const cfg = ACTION_CONFIG[moveItem.action];
+    if (!cfg) { showToast('Ação inválida.'); return; }
 
-    const qtdAtual = getItemQuantity(target);
+    const sourceIds = moveItem.sourceItemIds || [moveItem.itemId];
+    const currentSources = items
+      .filter((it) => sourceIds.includes(it.id))
+      .filter((it) => (it.status || 'Disponível') === moveItem.sourceStatus);
+
+    if (currentSources.length === 0) { showToast('Item não encontrado para movimentação.'); return; }
+
+    const qtdAtual = currentSources.reduce((sum, it) => sum + getItemQuantity(it), 0);
     const qtdMovimentada = toPositiveInt(moveItem.quantidade, 1);
 
     if (qtdMovimentada > qtdAtual) {
-      showToast(`Quantidade inválida. Esse registro possui apenas ${qtdAtual} unidade(s).`);
+      showToast(`Quantidade inválida. Esse grupo possui apenas ${qtdAtual} unidade(s).`);
+      return;
+    }
+
+    if (cfg.requireResponsavel && !(moveItem.responsavel || '').trim()) {
+      showToast('Informe o responsável pela retirada.');
       return;
     }
 
     setSyncing(true);
     try {
-      const responsavelFinal = shouldClearResponsavelByAction(moveItem.action) ? '' : (moveItem.responsavel || '');
+      const responsavelFinal = cfg.clearResponsavel ? '' : (moveItem.responsavel || '');
+      const destino = statusDestinoPorAcao(moveItem.action);
+      let restanteParaMover = qtdMovimentada;
+      const localItems = [...items];
+
+      for (const source of currentSources) {
+        if (restanteParaMover <= 0) break;
+
+        const idxLocal = localItems.findIndex((it) => it.id === source.id);
+        if (idxLocal === -1) continue;
+
+        const qtdSource = getItemQuantity(source);
+        const qtdConsumida = Math.min(qtdSource, restanteParaMover);
+        const qtdRestante = qtdSource - qtdConsumida;
+        restanteParaMover -= qtdConsumida;
+
+        if (cfg.removeFromStock) {
+          if (qtdRestante > 0) {
+            const remainingItem = { ...source, quantidade: qtdRestante };
+            await updateRowById('Itens', remainingItem.id, itemToRow(remainingItem));
+            localItems[idxLocal] = remainingItem;
+          } else {
+            await deleteRowById('Itens', source.id);
+            localItems.splice(idxLocal, 1);
+          }
+          continue;
+        }
+
+        if (qtdConsumida === qtdSource) {
+          const updated = {
+            ...source,
+            status: cfg.targetStatus,
+            responsavel: responsavelFinal,
+          };
+          await updateRowById('Itens', updated.id, itemToRow(updated));
+          localItems[idxLocal] = updated;
+        } else {
+          const remainingItem = { ...source, quantidade: qtdRestante };
+          const movedItem = {
+            ...source,
+            id: uid(),
+            quantidade: qtdConsumida,
+            status: cfg.targetStatus,
+            responsavel: responsavelFinal,
+            createdAt: new Date().toISOString(),
+          };
+
+          await updateRowById('Itens', remainingItem.id, itemToRow(remainingItem));
+          await addRow('Itens', itemToRow(movedItem));
+
+          localItems[idxLocal] = remainingItem;
+          localItems.unshift(movedItem);
+        }
+      }
+
       const mv = {
         id: uid(),
-        itemId: moveItem.itemId,
+        itemId: sourceIds.join(','),
         itemName: moveItem.itemName,
         action: moveItem.action,
         responsavel: responsavelFinal || '—',
         registradoPor: account.name || account.username,
         date: new Date().toISOString(),
-        obs: buildMovementObs(qtdMovimentada, moveItem.obs),
+        obs: buildMovementObs(qtdMovimentada, moveItem.obs, moveItem.sourceStatus, destino),
       };
 
       await addRow('Movimentacoes', movToRow(mv));
+      setItems(localItems);
       setMovements((prev) => [mv, ...prev]);
-
-      if (qtdMovimentada === qtdAtual) {
-        const updated = { ...target, status: moveItem.newStatus, responsavel: responsavelFinal };
-        await updateRowById('Itens', updated.id, itemToRow(updated));
-        setItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)));
-      } else {
-        const remainingItem = { ...target, quantidade: qtdAtual - qtdMovimentada };
-        const movedItem = {
-          ...target,
-          id: uid(),
-          quantidade: qtdMovimentada,
-          status: moveItem.newStatus,
-          responsavel: responsavelFinal,
-          createdAt: new Date().toISOString(),
-        };
-
-        await updateRowById('Itens', remainingItem.id, itemToRow(remainingItem));
-        await addRow('Itens', itemToRow(movedItem));
-
-        setItems((prev) => [
-          movedItem,
-          ...prev.map((it) => (it.id === remainingItem.id ? remainingItem : it)),
-        ]);
-      }
-
       setMoveModalOpen(false); setMoveItem(null);
       showToast('Movimentação registrada.');
     } catch (e) { showToast('Erro: ' + e.message); }
     finally { setSyncing(false); }
   }
 
-  const filtered = useMemo(() => items.filter((it) => {
+  const matchSearchAndCategory = useCallback((it) => {
     const s = search.toLowerCase();
-    const matchSearch = !search || it.nome.toLowerCase().includes(s) || (it.patrimonio || '').toLowerCase().includes(s) || (it.responsavel || '').toLowerCase().includes(s);
-    return matchSearch && (filterCat === 'Todas' || it.categoria === filterCat) && (filterStatus === 'Todos' || it.status === filterStatus);
-  }), [items, search, filterCat, filterStatus]);
+    const matchSearch = !search
+      || String(it.nome || '').toLowerCase().includes(s)
+      || String(it.patrimonio || '').toLowerCase().includes(s)
+      || String(it.responsavel || '').toLowerCase().includes(s);
+    return matchSearch && (filterCat === 'Todas' || it.categoria === filterCat);
+  }, [search, filterCat]);
 
-  const stats = useMemo(() => ({
-    totalItens: items.length,
-    totalQtd: items.reduce((sum, i) => sum + (parseInt(i.quantidade, 10) || 1), 0),
-    disp: items.filter((i) => i.status === 'Disponível').length,
-    manut: items.filter((i) => i.status === 'Em manutenção').length,
-  }), [items]);
+  const currentScreen = OPERATIONAL_TABS[tab] || null;
+
+  const filteredGroups = useMemo(() => {
+    if (!currentScreen) return [];
+    const rows = items
+      .filter((it) => (it.status || 'Disponível') === currentScreen.status)
+      .filter(matchSearchAndCategory);
+    return groupItemsByQuantity(rows);
+  }, [items, currentScreen, matchSearchAndCategory]);
+
+  const stats = useMemo(() => {
+    const qtdPorStatus = (status) => items
+      .filter((i) => (i.status || 'Disponível') === status)
+      .reduce((sum, i) => sum + getItemQuantity(i), 0);
+
+    return {
+      totalQtd: items.reduce((sum, i) => sum + getItemQuantity(i), 0),
+      disp: qtdPorStatus('Disponível'),
+      retirados: qtdPorStatus('Retirado para uso'),
+      manut: qtdPorStatus('Em manutenção'),
+    };
+  }, [items]);
 
   const qtdPorCategoria = useMemo(() => {
-    const map = {};
-    items.forEach((it) => { map[it.categoria] = (map[it.categoria] || 0) + (parseInt(it.quantidade, 10) || 1); });
-    return Object.entries(map).sort((a, b) => b[1] - a[1]);
+    const map = new Map();
+    items.forEach((it) => {
+      const status = it.status || 'Disponível';
+      if (!['Disponível', 'Retirado para uso', 'Em manutenção'].includes(status)) return;
+      const key = `${it.categoria || 'Sem categoria'}||${it.nome || 'Sem nome'}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          categoria: it.categoria || 'Sem categoria',
+          nome: it.nome || 'Sem nome',
+          disponivel: 0,
+          retirado: 0,
+          manutencao: 0,
+          total: 0,
+        });
+      }
+      const row = map.get(key);
+      const qtd = getItemQuantity(it);
+      if (status === 'Disponível') row.disponivel += qtd;
+      if (status === 'Retirado para uso') row.retirado += qtd;
+      if (status === 'Em manutenção') row.manutencao += qtd;
+      row.total += qtd;
+    });
+    return Array.from(map.values()).sort((a, b) => {
+      const c = a.categoria.localeCompare(b.categoria, 'pt-BR');
+      return c || a.nome.localeCompare(b.nome, 'pt-BR');
+    });
   }, [items]);
 
   if (!msalReady) return <div className="min-h-screen flex items-center justify-center bg-stone-100"><p className="text-stone-500 text-sm">Carregando…</p></div>;
@@ -508,32 +681,40 @@ export default function InventarioTI() {
         {loading ? <p className="text-sm text-stone-400 py-10 text-center">Carregando dados da planilha…</p> : (
           <>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-              <StatCard label="Itens cadastrados" value={stats.totalItens} />
-              <StatCard label="Quantidade total" value={stats.totalQtd} color={{ text: ACCENT_DARK }} />
-              <StatCard label="Disponíveis" value={stats.disp} color={STATUS_COLOR['Disponível']} />
+              <StatCard label="Itens disponíveis" value={stats.disp} color={STATUS_COLOR['Disponível']} />
+              <StatCard label="Retirados para uso" value={stats.retirados} color={STATUS_COLOR['Retirado para uso']} />
               <StatCard label="Em manutenção" value={stats.manut} color={STATUS_COLOR['Em manutenção']} />
+              <StatCard label="Quantidade total" value={stats.totalQtd} color={{ text: ACCENT_DARK }} />
             </div>
 
-            <div className="flex gap-1 mb-4 border-b border-stone-300">
-              <TabButton active={tab === 'itens'} onClick={() => setTab('itens')}>Itens</TabButton>
+            <div className="flex gap-1 mb-4 border-b border-stone-300 overflow-x-auto">
+              <TabButton active={tab === 'disponiveis'} onClick={() => setTab('disponiveis')}>Itens disponíveis</TabButton>
+              <TabButton active={tab === 'retirados'} onClick={() => setTab('retirados')}>Retirados para uso</TabButton>
+              <TabButton active={tab === 'manutencao'} onClick={() => setTab('manutencao')}>Em manutenção</TabButton>
               <TabButton active={tab === 'quantidades'} onClick={() => setTab('quantidades')}>Quantidade por categoria</TabButton>
               <TabButton active={tab === 'historico'} onClick={() => setTab('historico')}>Histórico</TabButton>
             </div>
 
-            {tab === 'itens' && (
+            {currentScreen && (
               <>
                 <div className="flex flex-wrap gap-2 mb-4">
                   <input type="text" placeholder="Buscar por nome, patrimônio ou responsável" value={search} onChange={(e) => setSearch(e.target.value)} className="flex-1 min-w-[220px] px-3 py-2 rounded border border-stone-300 bg-white text-sm" />
                   <select value={filterCat} onChange={(e) => setFilterCat(e.target.value)} className="px-3 py-2 rounded border border-stone-300 bg-white text-sm">
                     <option>Todas</option>{CATEGORIAS.map((c) => <option key={c}>{c}</option>)}
                   </select>
-                  <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="px-3 py-2 rounded border border-stone-300 bg-white text-sm">
-                    <option>Todos</option>{STATUS.map((s) => <option key={s}>{s}</option>)}
-                  </select>
                 </div>
-                {filtered.length === 0
-                  ? <div className="text-center py-16 text-stone-400 border border-dashed border-stone-300 rounded-lg">{items.length === 0 ? 'Nenhum item cadastrado. Clique em "+ Novo item".' : 'Nenhum item encontrado.'}</div>
-                  : <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 pb-10">{filtered.map((it) => <ItemCard key={it.id} item={it} onEdit={() => openEditModal(it)} onDelete={() => setConfirmDelete(it)} onMove={() => openMoveModal(it)} />)}</div>}
+
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h2 className="font-semibold text-stone-900">{currentScreen.title}</h2>
+                    <p className="text-xs text-stone-500">Itens agrupados por descrição/categoria e somados pela quantidade.</p>
+                  </div>
+                  <span className="text-xs text-stone-500">{filteredGroups.length} grupo(s)</span>
+                </div>
+
+                {filteredGroups.length === 0
+                  ? <div className="text-center py-16 text-stone-400 border border-dashed border-stone-300 rounded-lg">{items.length === 0 ? 'Nenhum item cadastrado. Clique em "+ Novo item".' : currentScreen.empty}</div>
+                  : <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 pb-10">{filteredGroups.map((it) => <ItemCard key={it.id} item={it} onEdit={it.itemIds?.length === 1 ? () => openEditModal(items.find((row) => row.id === it.itemIds[0]) || it) : null} onMove={() => openMoveModal(it)} />)}</div>}
               </>
             )}
 
@@ -541,10 +722,19 @@ export default function InventarioTI() {
               <div className="pb-10">
                 {qtdPorCategoria.length === 0
                   ? <div className="text-center py-16 text-stone-400 border border-dashed border-stone-300 rounded-lg">Nenhum item cadastrado.</div>
-                  : <div className="bg-white rounded-lg border border-stone-200 overflow-hidden">
+                  : <div className="bg-white rounded-lg border border-stone-200 overflow-x-auto">
                       <table className="w-full text-sm">
-                        <thead className="bg-stone-50 text-stone-500 text-xs uppercase"><tr><th className="text-left px-4 py-2 font-medium">Categoria / caixa</th><th className="text-right px-4 py-2 font-medium">Quantidade total</th></tr></thead>
-                        <tbody>{qtdPorCategoria.map(([cat, qtd]) => <tr key={cat} className="border-t border-stone-100"><td className="px-4 py-2">{cat}</td><td className="px-4 py-2 text-right font-medium" style={{ color: ACCENT_DARK }}>{qtd}</td></tr>)}</tbody>
+                        <thead className="bg-stone-50 text-stone-500 text-xs uppercase">
+                          <tr>
+                            <th className="text-left px-4 py-2 font-medium">Categoria</th>
+                            <th className="text-left px-4 py-2 font-medium">Item</th>
+                            <th className="text-right px-4 py-2 font-medium">Disponível</th>
+                            <th className="text-right px-4 py-2 font-medium">Retirado</th>
+                            <th className="text-right px-4 py-2 font-medium">Manutenção</th>
+                            <th className="text-right px-4 py-2 font-medium">Total</th>
+                          </tr>
+                        </thead>
+                        <tbody>{qtdPorCategoria.map((row) => <tr key={`${row.categoria}-${row.nome}`} className="border-t border-stone-100"><td className="px-4 py-2 text-stone-500">{row.categoria}</td><td className="px-4 py-2 font-medium">{row.nome}</td><td className="px-4 py-2 text-right">{row.disponivel}</td><td className="px-4 py-2 text-right">{row.retirado}</td><td className="px-4 py-2 text-right">{row.manutencao}</td><td className="px-4 py-2 text-right font-semibold" style={{ color: ACCENT_DARK }}>{row.total}</td></tr>)}</tbody>
                       </table>
                     </div>}
               </div>
@@ -556,8 +746,8 @@ export default function InventarioTI() {
                   ? <div className="text-center py-16 text-stone-400 border border-dashed border-stone-300 rounded-lg">Nenhuma movimentação registrada.</div>
                   : <div className="bg-white rounded-lg border border-stone-200 overflow-x-auto">
                       <table className="w-full text-sm">
-                        <thead className="bg-stone-50 text-stone-500 text-xs uppercase"><tr><th className="text-left px-4 py-2 font-medium">Data</th><th className="text-left px-4 py-2 font-medium">Item</th><th className="text-left px-4 py-2 font-medium">Ação</th><th className="text-left px-4 py-2 font-medium">Responsável</th><th className="text-left px-4 py-2 font-medium">Registrado por</th><th className="text-left px-4 py-2 font-medium">Obs</th></tr></thead>
-                        <tbody>{movements.map((mv) => <tr key={mv.id} className="border-t border-stone-100"><td className="px-4 py-2 whitespace-nowrap text-stone-500">{fmtDateTime(mv.date)}</td><td className="px-4 py-2 font-medium">{mv.itemName}</td><td className="px-4 py-2">{mv.action}</td><td className="px-4 py-2">{mv.responsavel}</td><td className="px-4 py-2 text-stone-500">{mv.registradoPor || '—'}</td><td className="px-4 py-2 text-stone-500">{mv.obs || '—'}</td></tr>)}</tbody>
+                        <thead className="bg-stone-50 text-stone-500 text-xs uppercase"><tr><th className="text-left px-4 py-2 font-medium">Data</th><th className="text-left px-4 py-2 font-medium">Item</th><th className="text-left px-4 py-2 font-medium">Ação</th><th className="text-right px-4 py-2 font-medium">Qtd.</th><th className="text-left px-4 py-2 font-medium">Responsável</th><th className="text-left px-4 py-2 font-medium">Registrado por</th><th className="text-left px-4 py-2 font-medium">Obs / detalhes</th></tr></thead>
+                        <tbody>{movements.map((mv) => <tr key={mv.id} className="border-t border-stone-100"><td className="px-4 py-2 whitespace-nowrap text-stone-500">{fmtDateTime(mv.date)}</td><td className="px-4 py-2 font-medium">{mv.itemName}</td><td className="px-4 py-2">{mv.action}</td><td className="px-4 py-2 text-right font-medium">{parseMovementQuantity(mv.obs)}</td><td className="px-4 py-2">{mv.responsavel}</td><td className="px-4 py-2 text-stone-500">{mv.registradoPor || '—'}</td><td className="px-4 py-2 text-stone-500 min-w-[280px]">{mv.obs || '—'}</td></tr>)}</tbody>
                       </table>
                     </div>}
               </div>
@@ -595,13 +785,23 @@ export default function InventarioTI() {
       {moveModalOpen && moveItem && (
         <Modal onClose={() => { setMoveModalOpen(false); setMoveItem(null); }} title={`Movimentar — ${moveItem.itemName}`}>
           <form onSubmit={saveMovement} className="space-y-3">
-            <Field label="Ação"><select value={moveItem.action} onChange={(e) => setMoveItem({ ...moveItem, action: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm"><option>Retirada</option><option>Devolução</option><option>Envio para manutenção</option><option>Retorno de manutenção</option><option>Baixa</option></select></Field>
+            <Field label="Ação">
+              <select value={moveItem.action} onChange={(e) => setMoveItem({ ...moveItem, action: e.target.value, responsavel: shouldClearResponsavelByAction(e.target.value) ? '' : moveItem.responsavel })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm">
+                {(moveItem.allowedActions || []).map((action) => <option key={action}>{action}</option>)}
+              </select>
+            </Field>
+
             <div className="grid grid-cols-2 gap-3">
               <Field label="Quantidade a movimentar"><input type="number" min="1" max={moveItem.quantidadeDisponivel || 1} value={moveItem.quantidade ?? 1} onChange={(e) => setMoveItem({ ...moveItem, quantidade: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm" /></Field>
-              <Field label="Novo status"><select value={moveItem.newStatus} onChange={(e) => setMoveItem({ ...moveItem, newStatus: e.target.value })} className="w-full px-3 py-2 rounded border border-stone-300 text-sm">{STATUS.map((s) => <option key={s}>{s}</option>)}</select></Field>
+              <Field label="Destino"><input type="text" value={statusDestinoPorAcao(moveItem.action)} readOnly className="w-full px-3 py-2 rounded border border-stone-200 bg-stone-50 text-sm text-stone-500" /></Field>
             </div>
-            <p className="text-xs text-stone-400 -mt-1">Disponível neste registro: {moveItem.quantidadeDisponivel || 1}. Se movimentar uma quantidade menor, o sistema divide o item e mantém o saldo no registro original.</p>
-            <Field label="Responsável"><input type="text" value={moveItem.responsavel} onChange={(e) => setMoveItem({ ...moveItem, responsavel: e.target.value })} placeholder="Quem está pegando/devolvendo" className="w-full px-3 py-2 rounded border border-stone-300 text-sm" /></Field>
+
+            <p className="text-xs text-stone-400 -mt-1">Quantidade neste grupo: {moveItem.quantidadeDisponivel || 1}. Ao movimentar parte da quantidade, o sistema mantém o saldo na tela atual e envia somente a quantidade escolhida para o destino.</p>
+
+            {!shouldClearResponsavelByAction(moveItem.action) && !ACTION_CONFIG[moveItem.action]?.removeFromStock && (
+              <Field label={moveItem.action === 'Envio para manutenção' ? 'Responsável / fornecedor da manutenção' : 'Responsável'}><input type="text" value={moveItem.responsavel} onChange={(e) => setMoveItem({ ...moveItem, responsavel: e.target.value })} placeholder={moveItem.action === 'Retirada' ? 'Quem está retirando o item' : 'Opcional'} className="w-full px-3 py-2 rounded border border-stone-300 text-sm" /></Field>
+            )}
+
             <Field label="Observação"><textarea value={moveItem.obs} onChange={(e) => setMoveItem({ ...moveItem, obs: e.target.value })} rows={2} className="w-full px-3 py-2 rounded border border-stone-300 text-sm" /></Field>
             <p className="text-xs text-stone-400">Registrado por: {account.name || account.username}</p>
             <div className="flex justify-end gap-2 pt-2">
@@ -633,7 +833,7 @@ function StatCard({ label, value, color }) {
 function TabButton({ active, onClick, children }) {
   return <button onClick={onClick} className={`px-4 py-2 text-sm font-medium border-b-2 transition ${active ? 'border-stone-900 text-stone-900' : 'border-transparent text-stone-400 hover:text-stone-600'}`}>{children}</button>;
 }
-function ItemCard({ item, onEdit, onDelete, onMove }) {
+function ItemCard({ item, onEdit, onMove }) {
   const color = STATUS_COLOR[item.status] || STATUS_COLOR['Disponível'];
   return (
     <div className="bg-white rounded-lg border border-stone-200 p-4 flex flex-col gap-2">
@@ -643,6 +843,7 @@ function ItemCard({ item, onEdit, onDelete, onMove }) {
       </div>
       <div className="text-xs text-stone-500 space-y-0.5 mt-1">
         <p>Quantidade: <span className="font-medium" style={{ color: ACCENT_DARK }}>{item.quantidade || 1}</span></p>
+        {item.sourceCount > 1 && <p>Registros agrupados: {item.sourceCount}</p>}
         {item.patrimonio && <p>Patrimônio: {item.patrimonio}</p>}
         {item.localizacao && <p>Local: {item.localizacao}</p>}
         {item.responsavel && <p>Com: {item.responsavel}</p>}
@@ -651,8 +852,7 @@ function ItemCard({ item, onEdit, onDelete, onMove }) {
       {item.obs && <p className="text-xs text-stone-400 italic border-t border-stone-100 pt-2 mt-1">{item.obs}</p>}
       <div className="flex gap-2 mt-2 pt-2 border-t border-stone-100">
         <button onClick={onMove} className="flex-1 text-xs px-2 py-1.5 rounded border border-stone-300 hover:bg-stone-50">Movimentar</button>
-        <button onClick={onEdit} className="text-xs px-2 py-1.5 rounded border border-stone-300 hover:bg-stone-50">Editar</button>
-        <button onClick={onDelete} className="text-xs px-2 py-1.5 rounded border border-stone-300 text-red-700 hover:bg-red-50">Remover</button>
+        {onEdit && <button onClick={onEdit} className="text-xs px-2 py-1.5 rounded border border-stone-300 hover:bg-stone-50">Editar</button>}
       </div>
     </div>
   );
